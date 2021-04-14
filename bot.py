@@ -44,6 +44,41 @@ coins = [
     "REP"
 ]
 
+precisions = {
+    "ADA": 10.0,
+    "STORJ": 100.0,
+    "BAT": 100.0,
+    "VET": 1.0,
+    "ONE": 10.0,
+    "ONT": 100.0,
+    "UNI": 100.0,
+    "DOGE": 1.0,
+    "ZEN": 1000.0,
+    "OXT": 100.0,
+    "QTUM": 1000.0,
+    "SOL": 100.0,
+    "BAND": 100.0,
+    "NEO": 1000.0,
+    "XLM": 10.0,
+    "ATOM": 1000.0,
+    "ZRX": 100.0,
+    "KNC": 1000.0,
+    "HNT": 1000.0,
+    "MATIC": 10.0,
+    "LINK": 100.0,
+    "MANA": 100.0,
+    "ENJ": 10.0,
+    "IOTA": 100.0,
+    "ZIL": 10.0,
+    "HBAR": 10.0,
+    "RVN": 10.0,
+    "WAVES": 100.0,
+    "OMG": 100.0,
+    "XTZ": 100.0,
+    "ALGO": 1000.0,
+    "REP": 1000.0
+}
+
 precisions = { c : -1 for c in coins }
 
 base_asset = "USD"
@@ -69,12 +104,19 @@ discord_client = discord.Client()
 #########################################################################################################
 # truncates the given float to N decimal places, returned as a float (typically used for quantities)
 def xf(coin, value):
-    p = precision(coin)
+    p = precisions.get(coin, 1.0)
     return int(value * p)/p
 
 # truncates the given float to 3 decimal places, returned as a string (typically used for prices)
 def xs(value):
     return "{}".format(int(value * 1000)/1000.0)
+
+# derives the total yield of a buy order, accounting for commission loss
+def xyield(order):
+    commission = 0.0
+    for f in order['fills']:
+        commission += float(f['commission'])
+    return (float(order['executedQty']) - commission)
 
 # prints to console and discord
 async def shout(msg):
@@ -98,32 +140,29 @@ async def shout(msg):
 #         tries += 1
 #         # lower qty precision
 
+# gets the decimal precision (LOT_SIZE) of the coin, or a default precision
+# def precision(coin):
+#     p = 1.0
+#     if (precisions[coin] == -1):
+#         pair = coin + "USDT"
+#         info = binance_client.get_symbol_info(pair)
+#         print("coin info = {}", info)
+#         f = [i["stepSize"] for i in info["filters"] if i["filterType"] == "LOT_SIZE"][0] # annoying but does the job
+#         if (f.index("1") > 0):
+#             p = math.pow(10.0, f.index("1") - 1)
+#             precisions[coin] = p
+#         else:
+#             p = 1.0
+#             precisions[coin] = p
+#         return p
+#     else:
+#         return precisions[coin]
+
 # gets the current USD balance
 def balance(coin):
     response = binance_client.get_asset_balance(asset=coin)
     print("Balance: {}".format(response))
     return float(response['free'])
-
-# gets the decimal precision (LOT_SIZE) of the coin, or a default precision
-def precision(coin):
-    p = 1.0
-    if (precisions[coin] == -1):
-        try:
-            pair = coin + "USDT"
-            info = binance_client.get_symbol_info(pair)
-            f = [i["stepSize"] for i in info["filters"] if i["filterType"] == "LOT_SIZE"][0] # annoying but does the job
-            if (f.index("1") > 0):
-                p = math.pow(10.0, f.index("1") - 1)
-                precisions[coin] = p
-            else:
-                p = 1.0
-                precisions[coin] = p
-            return p
-        except Exception as e:
-            print("an exception occured - {}".format(e))
-            return p
-    else:
-        return precisions[coin]
 
 # sells all of the given asset
 async def dump(coin):
@@ -156,7 +195,7 @@ async def market_buy(coin):
             pair = coin + base_asset
             order = binance_client.order_market_buy(symbol=pair, quantity=qty)
             print(order)
-            qty = xf(coin, balance(coin))
+            qty = xf(xyield(order))
             #qty = xf(coin, float(order['executedQty']) - float(order['fills'][0]['commission']))
             #order = client.get_order(symbol=pair,orderId=order['orderId'])
             #discord_message("Order info: {}".format(order))
@@ -365,7 +404,6 @@ async def listener():
                 await update_tail_order(coin)
     except Exception as ex:
         print(ex)
-        await init_connection()
 
 if __name__ == '__main__':
     print('Initializing')
