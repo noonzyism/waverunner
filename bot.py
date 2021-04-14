@@ -10,46 +10,42 @@ from binance.enums import *
 
 import discord
 
-pairs = [
-    "ADAUSDT",
-    "STORJUSDT",
-    "BATUSDT",
-    "VETUSDT",
-    "ONEUSDT",
-    "ONTUSDT",
-    "UNIUSDT",
-    "DOGEUSDT",
-    "ZENUSDT",
-    "OXTUSDT",
-    "QTUMUSDT",
-    "SOLUSDT",
-    "BANDUSDT",
-    "NEOUSDT",
-    "XLMUSDT",
-    "ATOMUSDT",
-    "ZRXUSDT",
-    "KNCUSDT",
-    "HNTUSDT"
+coins = [
+    "ADA",
+    "STORJ",
+    "BAT",
+    "VET",
+    "ONE",
+    "ONT",
+    "UNI",
+    "DOGE",
+    "ZEN",
+    "OXT",
+    "QTUM",
+    "SOL",
+    "BAND",
+    "NEO",
+    "XLM",
+    "ATOM",
+    "ZRX",
+    "KNC",
+    "HNT"
 ]
 
-streams = map(lambda s: s.lower() + "@kline_1m", pairs)
+base_asset = "USD"
+
+streams = map(lambda s: s.lower() + "usdt@kline_1m", coins)
 endpoint = "/".join(streams)
 
 SOCKET = "wss://stream.binance.com:9443/ws/" + endpoint
 
-opens = { p : [] for p in pairs }
-closes = { p : [] for p in pairs }
-rates = { p : [] for p in pairs }
-prices = { p : 0 for p in pairs }
+opens = { c : [] for c in coins }
+closes = { c : [] for c in coins }
+rates = { c : [] for c in coins }
+prices = { c : 0 for c in coins }
 
 last_msg = "none yet"
 channel = -1 # should start with a default channel but I'm lazy
-
-# current/last holding data
-# note: it's possible the asset this data is referencing was already sold by a stop-loss
-last_bought_pair = ""   # what pair is currently being held
-last_entry_price = -1    # the price the current holding was bought at
-last_trail_price = -1    # the trailing stop-loss price to sell at if hit
 
 binance_client = Client(config.API_KEY, config.API_SECRET, tld='us')
 discord_client = discord.Client()
@@ -64,7 +60,7 @@ def xf(value):
 
 # truncates the given float to 2 decimal places, returned as a string (typically used for prices)
 def xs(value):
-    return "{}".format(int(value * 100)/100.0)
+    return "{}".format(int(value * 1000)/1000.0)
 
 # prints to console and discord
 async def shout(msg):
@@ -99,23 +95,23 @@ async def shout(msg):
 #         tries += 1
 #         # lower qty precision
 
-# gets the current USDT balance
+# gets the current USD balance
 def balance():
-    response = binance_client.get_asset_balance(asset='USDT')
+    response = binance_client.get_asset_balance(asset=base_asset)
     print("Balance: {}".format(response))
     return float(response['free'])
 
 # sells all of the given asset
-async def dump(pair):
+async def dump(coin):
     try:
-        print("Attempting to dump {}".format(pair))
-        asset = pair.replace('USDT','')
-        response = binance_client.get_asset_balance(asset=asset)
+        print("Attempting to dump {}".format(coin))
+        response = binance_client.get_asset_balance(asset=coin)
         print("balance: {}".format(response))
         qty = xf(float(response['free']) + float(response['locked']))
         print("qty: {}".format(qty))
         if (qty > 0):
-            await cancel_tail_order(pair)
+            await cancel_tail_order(coin)
+            pair = coin + base_asset
             order = binance_client.order_market_sell(symbol=pair, quantity=qty)
             print(order)
             return True
@@ -126,19 +122,18 @@ async def dump(pair):
         return False
 
 # buys as much as possible of the given asset
-async def market_buy(pair):
+async def market_buy(coin):
     bal = balance()
     try:
         if (bal > 50.0):
-            curr_price = prices[pair]
+            curr_price = prices[coin]
             qty = xf(bal/curr_price * 0.99) # the .99 is to discount a bit in case the price has already gone beyond this
-            print("Attempting market buy of {} units of {}".format(qty, pair))
+            print("Attempting market buy of {} units of {}".format(qty, coin))
+            pair = coin + base_asset
             order = binance_client.order_market_buy(symbol=pair, quantity=qty)
             qty = xf(qty * 0.99) # discounting again because actual obtained quantity may be a little less than specified - todo: use actual order quantity so we don't have to do this
             print(order)
             #order = client.get_order(symbol=pair,orderId=order['orderId'])
-            last_bought_pair = pair
-            #last_entry_price = float(order['fills'][0]['price']) # assumption: market order always returns filled and w/ this data
             #discord_message("Order info: {}".format(order))
             tail_price = xs(curr_price*0.98)
             print("Tail price is set to {}".format(tail_price))
@@ -152,7 +147,7 @@ async def market_buy(pair):
                 stopPrice=tail_price)
             #tail_order = binance_client.order_limit_sell(symbol=pair, quantity=qty, price="{:.2f}".format(tail_price))
             print(tail_order)
-            await shout(":red_circle: Purchased {} at {} with sell tail at {}".format(pair, curr_price, tail_price))
+            await shout(":red_circle: Purchased {} at {} with sell tail at {}".format(coin, curr_price, tail_price))
         else:
             return False
     except Exception as e:
@@ -162,14 +157,15 @@ async def market_buy(pair):
 
 # updates (if necessary) the stop-limit-sell order of the given pair to trail 2% behind the current price
 # assumption: there is at most one stop-limit order for any given pair
-async def update_tail_order(pair):
+async def update_tail_order(coin):
     try:
+        pair = coin + base_asset
         orders = binance_client.get_open_orders(symbol=pair)
         if len(orders) > 0:
-            curr_price = prices[pair]
+            curr_price = prices[coin]
             stop_price = float(orders[0]['stopPrice'])
             if (curr_price*0.97 > stop_price): # stop_price is more than 3% away from the current price, raise it
-                print("Attempting to update tail order for {}".format(pair))
+                print("Attempting to update tail order for {}".format(coin))
                 # cancel previous
                 order_id = orders[0]['orderId']
                 binance_client.cancel_order(symbol=pair, orderId=order_id)
@@ -185,14 +181,15 @@ async def update_tail_order(pair):
                     price=tail_price,
                     stopPrice=tail_price)
                 print(tail_order)
-                await shout(":arrow_double_up: Updated {} tail from {} to {}".format(pair, stop_price, tail_price))
+                await shout(":arrow_double_up: Updated {} tail from {} to {}".format(coin, stop_price, tail_price))
     except Exception as e:
         await shout("an exception occured - {}".format(e))
 
 # cancels the stop-limit-sell order of the given pair
 # assumption: there is at most one stop-limit order for any given pair
-async def cancel_tail_order(pair):
+async def cancel_tail_order(coin):
     try:
+        pair = coin + base_asset
         orders = binance_client.get_open_orders(symbol=pair)
         if len(orders) > 0:
             order_id = orders[0]['orderId']
@@ -206,32 +203,32 @@ async def cancel_tail_order(pair):
 async def status():
     global opens, closes, rates
     embed = discord.Embed(title="Latest coin statuses:")
-    for pair in rates:
-        last_2_rates = rates[pair][-2:]
+    for coin in rates:
+        last_2_rates = rates[coin][-2:]
         s = sum(last_2_rates)
-        status = "{} rate over last 2m is {}%".format(pair[:-4], round(s*100, 3))
+        status = "{} rate over last 2m is {}%".format(coin, round(s*100, 3))
         print(status)
-        embed.add_field(name=pair[:-4], value=status)
+        embed.add_field(name=coin, value=status)
     await discord_embed(embed)
 
-async def check_for_alerts(pair):
+async def check_for_alerts(coin):
     global opens, closes, rates
-    last_2_rates = rates[pair][-2:]
+    last_2_rates = rates[coin][-2:]
     s = sum(last_2_rates)
     if (s > 0.012):
-        alert = ":ocean: {} (${}) over last 2m is surging {}%".format(pair[:-4], round(prices[pair], 3), round(s*100, 3))
+        alert = ":ocean: {} (${}) over last 2m is surging {}%".format(coin, round(prices[coin], 3), round(s*100, 3))
         await discord_message(alert)
-        await market_buy(pair)
+        await market_buy(coin)
     if (s < -0.02):
-        alert = ":small_red_triangle_down: {} (${}) over last 2m has crashed {}%".format(pair[:-4], round(prices[pair], 3), round(s*100, 3))
+        alert = ":small_red_triangle_down: {} (${}) over last 2m has crashed {}%".format(coin, round(prices[coin], 3), round(s*100, 3))
         await discord_message(alert)
 
 async def output_prices():
     global prices
     embed = discord.Embed(title="Latest coin prices:")
-    for pair in rates:
-        price = round(prices[pair], 3)
-        embed.add_field(name=pair[:-4], value=price)
+    for coin in rates:
+        price = round(prices[coin], 3)
+        embed.add_field(name=coin, value=price)
     await discord_embed(embed)
 
 #########################################################################################################
@@ -264,6 +261,9 @@ async def on_message(message):
                     if command == "waverunner":
                         await channel.send("Ready for biz :rotating_light:")
 
+                    elif command == "endpoint":
+                        await shout(endpoint)
+
                     elif command == "latest":
                         await status()
 
@@ -271,11 +271,11 @@ async def on_message(message):
                         await output_prices()
 
                     elif command == "balance":
-                        await discord_message("USDT balance is: {}".format(balance()))
+                        await discord_message("{} balance is: {}".format(base_asset, balance()))
 
                     elif command.startswith("buy"):
                         second_arg = command.replace('buy','').strip()
-                        if (message.author.id == 127540807984087040):
+                        if (message.author.id == config.OWNER_USERID):
                             if (second_arg in prices):
                                 await market_buy(second_arg)
                             else:
@@ -284,7 +284,7 @@ async def on_message(message):
                             await discord_message("Sorry bud, I don't know you like that.")
 
                     elif command.startswith("dump"):
-                        if (message.author.id == 127540807984087040):
+                        if (message.author.id == config.OWNER_USERID):
                             second_arg = command.replace('dump','').strip()
                             success = await dump(second_arg)
                             if (success):
@@ -295,7 +295,7 @@ async def on_message(message):
                             await discord_message("Sorry bud, I don't know you like that.")
 
                     elif command.startswith("update"):
-                        if (message.author.id == 127540807984087040):
+                        if (message.author.id == config.OWNER_USERID):
                             second_arg = command.replace('update','').strip()
                             await update_tail_order(second_arg)
                         else:
@@ -325,19 +325,19 @@ async def listener():
         last_msg = message
         json_message = json.loads(message)
         candle = json_message['k']
-        pair = candle['s']
+        coin = candle['s'].replace('USDT', '')
         is_candle_closed = candle['x']
-        prices[pair] = float(candle['c'])
+        prices[coin] = float(candle['c'])
         if is_candle_closed:
             #print(message)
             open_price = float(candle['o'])
             close_price = float(candle['c'])
             rate = (close_price/open_price) - 1.0
-            opens[pair].append(open_price)
-            closes[pair].append(close_price)
-            rates[pair].append(rate)
-            await check_for_alerts(pair)
-            await update_tail_order(pair)
+            opens[coin].append(open_price)
+            closes[coin].append(close_price)
+            rates[coin].append(rate)
+            await check_for_alerts(coin)
+            await update_tail_order(coin)
 
 if __name__ == '__main__':
     print('Initializing')
