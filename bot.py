@@ -32,6 +32,8 @@ coins = [
     "HNT"
 ]
 
+precisions = { c : -1 for c in coins }
+
 base_asset = "USD"
 
 streams = map(lambda s: s.lower() + "usdt@kline_1m", coins)
@@ -53,34 +55,23 @@ discord_client = discord.Client()
 #########################################################################################################
 # Helpers
 #########################################################################################################
-# truncates the given float to 1 decimal place, returned as a float (typically used for quantities)
-# todo: make this variable precision based on pair
-def xf(value):
-    return int(value * 10)/10.0
+# truncates the given float to N decimal places, returned as a float (typically used for quantities)
+def xf(coin, value):
+    p = precision(coin)
+    return int(value * p)/p
 
-# truncates the given float to 2 decimal places, returned as a string (typically used for prices)
+# truncates the given float to 3 decimal places, returned as a string (typically used for prices)
 def xs(value):
     return "{}".format(int(value * 1000)/1000.0)
 
 # prints to console and discord
 async def shout(msg):
-    print(msg)
+    print(msg, flush=True)
     await discord_message(msg)
 
 #########################################################################################################
 # Binance Interaction
 #########################################################################################################
-# soon...
-# def order(side, quantity, symbol,order_type=ORDER_TYPE_MARKET):
-#     try:
-#         print("sending order")
-#         order = binance_client.create_order(symbol=symbol, side=side, type=order_type, quantity=quantity)
-#         print(order)
-#     except Exception as e:
-#         print("an exception occured - {}".format(e))
-#         return False
-#     return True
-
 # def binance_market_buy(pair, quantity):
 #     success = False
 #     tries = 0
@@ -101,13 +92,32 @@ def balance():
     print("Balance: {}".format(response))
     return float(response['free'])
 
+# gets the decimal precision (LOT_SIZE) of the coin, or a default precision
+def precision(coin):
+    p = 10.0
+    if (precisions[coin] == -1):
+        try:
+            pair = coin + "USDT"
+            info = binance_client.get_symbol_info(pair)
+            f = [i["stepSize"] for i in info["filters"] if i["filterType"] == "LOT_SIZE"][0] # annoying but does the job
+            if (f.index("1") > 0):
+                p = math.pow(10.0, f.index("1") - 1)
+            else:
+                p = 1.0
+            precisions[coin] = p
+            return p
+        except Exception as e:
+            return p
+    else:
+        return precisions[coin]
+
 # sells all of the given asset
 async def dump(coin):
     try:
         print("Attempting to dump {}".format(coin))
         response = binance_client.get_asset_balance(asset=coin)
         print("balance: {}".format(response))
-        qty = xf(float(response['free']) + float(response['locked']))
+        qty = xf(coin, float(response['free']) + float(response['locked']))
         print("qty: {}".format(qty))
         if (qty > 0):
             await cancel_tail_order(coin)
@@ -127,12 +137,12 @@ async def market_buy(coin):
     try:
         if (bal > 50.0):
             curr_price = prices[coin]
-            qty = xf(bal/curr_price * 0.99) # the .99 is to discount a bit in case the price has already gone beyond this
+            qty = xf(coin, bal/curr_price * 0.99) # the .99 is to discount a bit in case the price has already gone beyond this
             print("Attempting market buy of {} units of {}".format(qty, coin))
             pair = coin + base_asset
             order = binance_client.order_market_buy(symbol=pair, quantity=qty)
-            qty = xf(qty * 0.99) # discounting again because actual obtained quantity may be a little less than specified - todo: use actual order quantity so we don't have to do this
             print(order)
+            qty = xf(coin, float(order['executedQty']) - float(order['fills'][0]['commission']))
             #order = client.get_order(symbol=pair,orderId=order['orderId'])
             #discord_message("Order info: {}".format(order))
             tail_price = xs(curr_price*0.98)
@@ -171,7 +181,7 @@ async def update_tail_order(coin):
                 binance_client.cancel_order(symbol=pair, orderId=order_id)
                 # create new
                 tail_price = xs(curr_price*0.98)
-                qty = xf(float(orders[0]['origQty']) - float(orders[0]['executedQty']))
+                qty = xf(coin, float(orders[0]['origQty']) - float(orders[0]['executedQty']))
                 tail_order = binance_client.create_order(
                     symbol=pair, 
                     side='SELL', 
@@ -258,11 +268,10 @@ async def on_message(message):
                 try:
                     global channel, last_msg
                     channel = message.channel
-                    if command == "waverunner":
-                        await channel.send("Ready for biz :rotating_light:")
-
-                    elif command == "endpoint":
-                        await shout(endpoint)
+                    if command == "kill":
+                        if (message.author.id == config.OWNER_USERID):
+                            await shout("Cya")
+                            quit()
 
                     elif command == "latest":
                         await status()
