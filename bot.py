@@ -2,6 +2,7 @@ import os
 import asyncio
 from threading import Thread
 import math
+import traceback
 
 import websockets, json, numpy
 import config
@@ -182,6 +183,7 @@ async def dump(coin):
             return False
     except Exception as e:
         print("an exception occured - {}".format(e))
+        traceback.print_exc()
         return False
 
 # buys as much as possible of the given asset
@@ -195,12 +197,12 @@ async def market_buy(coin):
             pair = coin + base_asset
             order = binance_client.order_market_buy(symbol=pair, quantity=qty)
             print(order)
-            qty = xf(xyield(order))
+            qty = xf(coin, xyield(order))
             #qty = xf(coin, float(order['executedQty']) - float(order['fills'][0]['commission']))
             #order = client.get_order(symbol=pair,orderId=order['orderId'])
             #discord_message("Order info: {}".format(order))
             tail_price = xs(curr_price*0.98)
-            print("Attempting to place tail with qty={} and price={}".format(tail_price))
+            print("Attempting to place tail with qty={} and price={}".format(qty, tail_price))
             tail_order = binance_client.create_order(
                 symbol=pair, 
                 side='SELL', 
@@ -216,6 +218,7 @@ async def market_buy(coin):
             return False
     except Exception as e:
         await shout("an exception occured - {}".format(e))
+        traceback.print_exc()
         return False
     return True
 
@@ -248,6 +251,7 @@ async def update_tail_order(coin):
                 await shout(":arrow_double_up: Updated {} tail from {} to {}".format(coin, stop_price, tail_price))
     except Exception as e:
         await shout("an exception occured - {}".format(e))
+        traceback.print_exc()
 
 # cancels the stop-limit-sell order of the given pair
 # assumption: there is at most one stop-limit order for any given pair
@@ -260,6 +264,7 @@ async def cancel_tail_order(coin):
             binance_client.cancel_order(symbol=pair, orderId=order_id)
     except Exception as e:
         await shout("an exception occured - {}".format(e))
+        traceback.print_exc()
 
 #########################################################################################################
 # Alerting/Status Check
@@ -374,6 +379,7 @@ async def on_message(message):
                             await channel.send("Come again?")
                 except Exception as ex:
                     print(ex)
+                    traceback.print_exc()
                     
 #########################################################################################################
 # Initializing & Socket Listening
