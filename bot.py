@@ -18,7 +18,6 @@ coins = [
     "ONE",
     "ONT",
     "UNI",
-    "DOGE",
     "ZEN",
     "OXT",
     "QTUM",
@@ -29,7 +28,20 @@ coins = [
     "ATOM",
     "ZRX",
     "KNC",
-    "HNT"
+    "HNT",
+    "MATIC",
+    "LINK",
+    "MANA",
+    "ENJ",
+    "IOTA",
+    "ZIL",
+    "HBAR",
+    "RVN",
+    "WAVES",
+    "OMG",
+    "XTZ",
+    "ALGO",
+    "REP"
 ]
 
 precisions = { c : -1 for c in coins }
@@ -87,8 +99,8 @@ async def shout(msg):
 #         # lower qty precision
 
 # gets the current USD balance
-def balance():
-    response = binance_client.get_asset_balance(asset=base_asset)
+def balance(coin):
+    response = binance_client.get_asset_balance(asset=coin)
     print("Balance: {}".format(response))
     return float(response['free'])
 
@@ -133,7 +145,7 @@ async def dump(coin):
 
 # buys as much as possible of the given asset
 async def market_buy(coin):
-    bal = balance()
+    bal = balance(base_asset)
     try:
         if (bal > 50.0):
             curr_price = prices[coin]
@@ -142,7 +154,8 @@ async def market_buy(coin):
             pair = coin + base_asset
             order = binance_client.order_market_buy(symbol=pair, quantity=qty)
             print(order)
-            qty = xf(coin, float(order['executedQty']) - float(order['fills'][0]['commission']))
+            qty = xf(coin, balance(coin))
+            #qty = xf(coin, float(order['executedQty']) - float(order['fills'][0]['commission']))
             #order = client.get_order(symbol=pair,orderId=order['orderId'])
             #discord_message("Order info: {}".format(order))
             tail_price = xs(curr_price*0.98)
@@ -280,7 +293,7 @@ async def on_message(message):
                         await output_prices()
 
                     elif command == "balance":
-                        await discord_message("{} balance is: {}".format(base_asset, balance()))
+                        await discord_message("{} balance is: {}".format(base_asset, balance(base_asset)))
 
                     elif command.startswith("buy"):
                         second_arg = command.replace('buy','').strip()
