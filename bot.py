@@ -106,7 +106,7 @@ def balance(coin):
 
 # gets the decimal precision (LOT_SIZE) of the coin, or a default precision
 def precision(coin):
-    p = 10.0
+    p = 1.0
     if (precisions[coin] == -1):
         try:
             pair = coin + "USDT"
@@ -114,11 +114,13 @@ def precision(coin):
             f = [i["stepSize"] for i in info["filters"] if i["filterType"] == "LOT_SIZE"][0] # annoying but does the job
             if (f.index("1") > 0):
                 p = math.pow(10.0, f.index("1") - 1)
+                precisions[coin] = p
             else:
                 p = 1.0
-            precisions[coin] = p
+                precisions[coin] = p
             return p
         except Exception as e:
+            print("an exception occured - {}".format(e))
             return p
     else:
         return precisions[coin]
@@ -159,7 +161,7 @@ async def market_buy(coin):
             #order = client.get_order(symbol=pair,orderId=order['orderId'])
             #discord_message("Order info: {}".format(order))
             tail_price = xs(curr_price*0.98)
-            print("Tail price is set to {}".format(tail_price))
+            print("Attempting to place tail with qty={} and price={}".format(tail_price))
             tail_order = binance_client.create_order(
                 symbol=pair, 
                 side='SELL', 
@@ -343,23 +345,27 @@ async def init_connection():
 
 async def listener():
     global opens, closes, rates, prices, last_msg
-    async for message in websocket:
-        last_msg = message
-        json_message = json.loads(message)
-        candle = json_message['k']
-        coin = candle['s'].replace('USDT', '')
-        is_candle_closed = candle['x']
-        prices[coin] = float(candle['c'])
-        if is_candle_closed:
-            #print(message)
-            open_price = float(candle['o'])
-            close_price = float(candle['c'])
-            rate = (close_price/open_price) - 1.0
-            opens[coin].append(open_price)
-            closes[coin].append(close_price)
-            rates[coin].append(rate)
-            await check_for_alerts(coin)
-            await update_tail_order(coin)
+    try:
+        async for message in websocket:
+            last_msg = message
+            json_message = json.loads(message)
+            candle = json_message['k']
+            coin = candle['s'].replace('USDT', '')
+            is_candle_closed = candle['x']
+            prices[coin] = float(candle['c'])
+            if is_candle_closed:
+                #print(message)
+                open_price = float(candle['o'])
+                close_price = float(candle['c'])
+                rate = (close_price/open_price) - 1.0
+                opens[coin].append(open_price)
+                closes[coin].append(close_price)
+                rates[coin].append(rate)
+                await check_for_alerts(coin)
+                await update_tail_order(coin)
+    except Exception as ex:
+        print(ex)
+        await init_connection()
 
 if __name__ == '__main__':
     print('Initializing')
