@@ -3,6 +3,8 @@ import asyncio
 from threading import Thread
 import math
 import traceback
+import datetime
+from datetime import timedelta
 
 import websockets, json, numpy
 import config
@@ -82,15 +84,7 @@ precisions = {
 
 base_asset = "USD"
 
-# holds data about the last held coin
-holding = {
-    coin: "",
-    entry: 0.0,
-    buy_order: 0,
-    tail_order: 0
-}
-
-mins_since_last_buy = 0
+holdings = {}
 
 streams = map(lambda s: s.lower() + "usdt@kline_1m", coins)
 endpoint = "/".join(streams)
@@ -193,6 +187,7 @@ async def dump(coin):
             pair = coin + base_asset
             order = binance_client.order_market_sell(symbol=pair, quantity=qty)
             print(order)
+            holdings.pop(coin, None)
             return True
         else:
             return False
@@ -212,6 +207,7 @@ async def market_buy(coin):
             pair = coin + base_asset
             order = binance_client.order_market_buy(symbol=pair, quantity=qty)
             print(order)
+            buy_price = xprice(order)
             qty = xf(coin, xyield(order))
             tail_price = xs(curr_price*0.98)
             print("Attempting to place tail with qty={}, trigger={}, limit={}".format(qty, tail_price, buy_price))
@@ -224,6 +220,11 @@ async def market_buy(coin):
                 price=tail_price,
                 stopPrice=tail_price)
             print(tail_order)
+            holding = { 
+                "buy_price": buy_price,
+                "buy_time": datetime.datetime.now()
+            }
+            holdings[coin] = holding
             await shout(":red_circle: Purchased {} at {} with sell tail at {}".format(coin, buy_price, tail_price))
         else:
             return False
@@ -260,6 +261,10 @@ async def update_tail_order(coin):
                     stopPrice=tail_price)
                 print(tail_order)
                 await shout(":arrow_double_up: Updated {} tail from {} to {}".format(coin, stop_price, tail_price))
+        else:
+            # coin has no tail orders, it's safe to assume this coin has been sold or is not being held
+            # todo: make a dedicated more precise way of ensuring this holdings list is always in sync with reality
+            holdings.pop(coin, None)
     except Exception as e:
         await shout("an exception occured - {}".format(e))
         traceback.print_exc()
@@ -302,6 +307,21 @@ async def check_for_alerts(coin):
     if (s < -0.02):
         alert = ":small_red_triangle_down: {} (${}) over last 2m has crashed {}%".format(coin, round(prices[coin], 3), round(s*100, 3))
         await discord_message(alert)
+
+async def check_for_exits(coin):
+    if coin in holdings:
+        buy_price = holdings[coin]['buy_price']
+        cur_price = prices[coin]
+        buy_time = holdings[coin]['buy_time']
+        cur_time = datetime.datetime.now()
+        gainrate = (cur_price/buy_price) - 1.0
+        if cur_time > buy_time + timedelta(minutes = 20):
+            time_delta = (cur_time - buy_time).seconds/60 # time since buy in minutes
+            # the rule of thumb is any rate of gain better than 2% in 20 mins (or 3% in 30 mins, 4% in 40 mins, etc) is worth exiting
+            # the ratio of rate/time is 1% in 10 mins which is 0.01/10 which is 0.001
+            if gainrate/time_delta > 0.001:
+                await dump(coin)
+                await shout(":green_circle: Selling {} at {} for +{}%".format(coin, cur_price, round(gainrate*100, 3)))     
 
 async def output_prices():
     global prices
@@ -424,6 +444,7 @@ async def listener():
                 rates[coin].append(rate)
                 await check_for_alerts(coin)
                 await update_tail_order(coin)
+                await check_for_exits(coin)
     except Exception as ex:
         print(ex)
 
