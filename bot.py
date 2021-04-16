@@ -20,7 +20,6 @@ coins = [
     "ONT",
     "UNI",
     "ZEN",
-    "OXT",
     "QTUM",
     "SOL",
     "BAND",
@@ -42,7 +41,8 @@ coins = [
     "OMG",
     "XTZ",
     "ALGO",
-    "REP"
+    "REP",
+    "OXT"
 ]
 
 precisions = {
@@ -55,7 +55,6 @@ precisions = {
     "UNI": 100.0,
     "DOGE": 1.0,
     "ZEN": 1000.0,
-    "OXT": 100.0,
     "QTUM": 1000.0,
     "SOL": 100.0,
     "BAND": 100.0,
@@ -77,12 +76,21 @@ precisions = {
     "OMG": 100.0,
     "XTZ": 100.0,
     "ALGO": 1000.0,
-    "REP": 1000.0
+    "REP": 1000.0,
+    "OXT": 100.0
 }
 
-precisions = { c : -1 for c in coins }
-
 base_asset = "USD"
+
+# holds data about the last held coin
+holding = {
+    coin: "",
+    entry: 0.0,
+    buy_order: 0,
+    tail_order: 0
+}
+
+mins_since_last_buy = 0
 
 streams = map(lambda s: s.lower() + "usdt@kline_1m", coins)
 endpoint = "/".join(streams)
@@ -118,6 +126,13 @@ def xyield(order):
     for f in order['fills']:
         commission += float(f['commission'])
     return (float(order['executedQty']) - commission)
+
+# derives the max price spent per coin on the given buy order
+def xprice(order):
+    price = 0.0
+    for f in order['fills']:
+        price = max(price, float(f['price']))
+    return price
 
 # prints to console and discord
 async def shout(msg):
@@ -198,11 +213,8 @@ async def market_buy(coin):
             order = binance_client.order_market_buy(symbol=pair, quantity=qty)
             print(order)
             qty = xf(coin, xyield(order))
-            #qty = xf(coin, float(order['executedQty']) - float(order['fills'][0]['commission']))
-            #order = client.get_order(symbol=pair,orderId=order['orderId'])
-            #discord_message("Order info: {}".format(order))
             tail_price = xs(curr_price*0.98)
-            print("Attempting to place tail with qty={} and price={}".format(qty, tail_price))
+            print("Attempting to place tail with qty={}, trigger={}, limit={}".format(qty, tail_price, buy_price))
             tail_order = binance_client.create_order(
                 symbol=pair, 
                 side='SELL', 
@@ -211,9 +223,8 @@ async def market_buy(coin):
                 quantity=qty, 
                 price=tail_price,
                 stopPrice=tail_price)
-            #tail_order = binance_client.order_limit_sell(symbol=pair, quantity=qty, price="{:.2f}".format(tail_price))
             print(tail_order)
-            await shout(":red_circle: Purchased {} at {} with sell tail at {}".format(coin, curr_price, tail_price))
+            await shout(":red_circle: Purchased {} at {} with sell tail at {}".format(coin, buy_price, tail_price))
         else:
             return False
     except Exception as e:
@@ -340,6 +351,11 @@ async def on_message(message):
 
                     elif command == "balance":
                         await discord_message("{} balance is: {}".format(base_asset, balance(base_asset)))
+
+                    elif command.startswith("price"):
+                        second_arg = command.replace('price','').strip()
+                        if (second_arg in prices):
+                            await discord_message("{} price is currently {}".format(second_arg, prices[second_arg]))
 
                     elif command.startswith("buy"):
                         second_arg = command.replace('buy','').strip()
