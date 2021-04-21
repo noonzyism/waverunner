@@ -19,7 +19,6 @@ coins = [
     "BAT",
     "VET",
     "ONE",
-    "ONT",
     "UNI",
     "ZEN",
     "QTUM",
@@ -43,8 +42,7 @@ coins = [
     "OMG",
     "XTZ",
     "ALGO",
-    "REP",
-    "OXT"
+    "DOGE"
 ]
 
 precisions = {
@@ -78,7 +76,6 @@ precisions = {
     "OMG": 100.0,
     "XTZ": 100.0,
     "ALGO": 1000.0,
-    "REP": 1000.0,
     "OXT": 100.0
 }
 
@@ -209,7 +206,8 @@ async def market_buy(coin):
             print(order)
             buy_price = xprice(order)
             qty = xf(coin, xyield(order))
-            tail_price = xs(curr_price*0.98)
+            tail_price = xs(curr_price*0.975)
+            limit_price = xs(curr_price*0.90) # so that it doesn't get stuck bagholding
             print("Attempting to place tail with qty={}, trigger={}, limit={}".format(qty, tail_price, buy_price))
             tail_order = binance_client.create_order(
                 symbol=pair, 
@@ -217,7 +215,7 @@ async def market_buy(coin):
                 type='STOP_LOSS_LIMIT', 
                 timeInForce='GTC',
                 quantity=qty, 
-                price=tail_price,
+                price=limit_price,
                 stopPrice=tail_price)
             print(tail_order)
             holding = { 
@@ -249,7 +247,7 @@ async def update_tail_order(coin):
                 order_id = orders[0]['orderId']
                 binance_client.cancel_order(symbol=pair, orderId=order_id)
                 # create new
-                tail_price = xs(curr_price*0.98)
+                tail_price = xs(curr_price*0.975)
                 qty = xf(coin, float(orders[0]['origQty']) - float(orders[0]['executedQty']))
                 tail_order = binance_client.create_order(
                     symbol=pair, 
