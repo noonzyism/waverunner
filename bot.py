@@ -6,7 +6,7 @@ import traceback
 import datetime
 from datetime import timedelta
 
-import websockets, json, numpy
+import websockets, json, numpy, talib
 import config
 from binance.client import Client
 from binance.enums import *
@@ -92,6 +92,7 @@ opens = { c : [] for c in coins }
 closes = { c : [] for c in coins }
 rates = { c : [] for c in coins }
 prices = { c : 0 for c in coins }
+rsis = { c : [50.0] for c in coins }
 
 last_msg = "none yet"
 channel = -1 # should start with a default channel but I'm lazy
@@ -184,6 +185,11 @@ async def dump(coin):
             pair = coin + base_asset
             order = binance_client.order_market_sell(symbol=pair, quantity=qty)
             print(order)
+            if coin in holdings:
+                buy_price = holdings[coin]['buy_price']
+                cur_price = prices[coin]
+                gainrate = (cur_price/buy_price) - 1.0
+                await shout(":green_circle: Selling {} at {} for {}%".format(coin, cur_price, round(gainrate*100, 3)))
             holdings.pop(coin, None)
             return True
         else:
@@ -206,8 +212,8 @@ async def market_buy(coin):
             print(order)
             buy_price = xprice(order)
             qty = xf(coin, xyield(order))
-            tail_price = xs(curr_price*0.975)
-            limit_price = xs(curr_price*0.90) # so that it doesn't get stuck bagholding
+            tail_price = xs(curr_price*0.98)
+            limit_price = xs(curr_price*0.94) # so that it doesn't get stuck bagholding
             print("Attempting to place tail with qty={}, trigger={}, limit={}".format(qty, tail_price, buy_price))
             tail_order = binance_client.create_order(
                 symbol=pair, 
@@ -247,7 +253,8 @@ async def update_tail_order(coin):
                 order_id = orders[0]['orderId']
                 binance_client.cancel_order(symbol=pair, orderId=order_id)
                 # create new
-                tail_price = xs(curr_price*0.975)
+                tail_price = xs(curr_price*0.98)
+                lim_price = xs(curr_price*0.94)
                 qty = xf(coin, float(orders[0]['origQty']) - float(orders[0]['executedQty']))
                 tail_order = binance_client.create_order(
                     symbol=pair, 
@@ -255,7 +262,7 @@ async def update_tail_order(coin):
                     type='STOP_LOSS_LIMIT',
                     timeInForce='GTC',
                     quantity=qty, 
-                    price=tail_price,
+                    price=lim_price,
                     stopPrice=tail_price)
                 print(tail_order)
                 await shout(":arrow_double_up: Updated {} tail from {} to {}".format(coin, stop_price, tail_price))
@@ -295,18 +302,46 @@ async def status():
     await discord_embed(embed)
 
 async def check_for_alerts(coin):
-    global opens, closes, rates
+    global opens, closes, rates, rsis
     last_2_rates = rates[coin][-2:]
+    # RSI checks
+    rsi = talib.RSI(numpy.array(closes[coin]), 14)
+    last_rsi = rsi[-1]
+    if (math.isnan(last_rsi) != True):
+        rsis[coin].append(last_rsi)
+    rsi_2 = talib.RSI(numpy.array(rsis[coin]), 14)
+    last_rsi2 = rsi_2[-1]
+    if (last_rsi2 < 30):
+        alert = ":grey_exclamation: {} (${}) RSI-2 is at {}".format(coin, round(prices[coin], 3), round(last_rsi2, 3))
+        await discord_message(alert)
+    if (last_rsi2 > 70):
+        alert = ":grey_exclamation: {} (${}) RSI-2 is at {}".format(coin, round(prices[coin], 3), round(last_rsi2, 3))
+        await discord_message(alert)
+
+    if len(closes[coin]) % 15 == 0:
+        if (last_rsi < 30):
+            alert = ":chart_with_downwards_trend: {} (${}) RSI is at {}".format(coin, round(prices[coin], 3), round(last_rsi, 3))
+            #await market_buy(coin)
+            await discord_message(alert)
+        if (last_rsi > 70):
+            alert = ":chart_with_upwards_trend: {} (${}) RSI is at {}".format(coin, round(prices[coin], 3), round(last_rsi, 3))
+            #await dump(coin)
+            await discord_message(alert)
+    # Surge checks
     s = sum(last_2_rates)
     if (s > 0.012):
         alert = ":ocean: {} (${}) over last 2m is surging {}%".format(coin, round(prices[coin], 3), round(s*100, 3))
         await discord_message(alert)
-        await market_buy(coin)
+        if (last_rsi < 50):
+            alert = ":chart_with_downwards_trend: {} (${}) RSI is at {}".format(coin, round(prices[coin], 3), round(last_rsi, 3))
+            await discord_message(alert)
+            await market_buy(coin)
     if (s < -0.02):
         alert = ":small_red_triangle_down: {} (${}) over last 2m has crashed {}%".format(coin, round(prices[coin], 3), round(s*100, 3))
         await discord_message(alert)
 
 async def check_for_exits(coin):
+    # Short-circuit sell checks
     if coin in holdings:
         buy_price = holdings[coin]['buy_price']
         cur_price = prices[coin]
@@ -319,7 +354,6 @@ async def check_for_exits(coin):
             # the ratio of rate/time is 1% in 10 mins which is 0.01/10 which is 0.001
             if gainrate/time_delta > 0.001:
                 await dump(coin)
-                await shout(":green_circle: Selling {} at {} for +{}%".format(coin, cur_price, round(gainrate*100, 3)))     
 
 async def output_prices():
     global prices
@@ -369,6 +403,20 @@ async def on_message(message):
 
                     elif command == "balance":
                         await discord_message("{} balance is: {}".format(base_asset, balance(base_asset)))
+
+                    elif command == "holding":
+                        if (len(holdings) > 0):
+                            embed = discord.Embed(title="Current holding(s):")
+                            for coin in holdings:
+                                buy_price = holdings[coin]['buy_price']
+                                cur_price = prices[coin]
+                                buy_time = holdings[coin]['buy_time']
+                                cur_time = datetime.datetime.now()
+                                time_delta = (cur_time - buy_time).seconds/60
+                                embed.add_field(name=coin, value="Purchased {} minutes ago for {} (current price: {})".format(int(time_delta), buy_price, cur_price))
+                            await discord_embed(embed)
+                        else:
+                            await discord_message("Nothing at the moment.")
 
                     elif command.startswith("price"):
                         second_arg = command.replace('price','').strip()
@@ -432,6 +480,7 @@ async def listener():
             coin = candle['s'].replace('USDT', '')
             is_candle_closed = candle['x']
             prices[coin] = float(candle['c'])
+            await check_for_exits(coin)
             if is_candle_closed:
                 #print(message)
                 open_price = float(candle['o'])
@@ -442,7 +491,6 @@ async def listener():
                 rates[coin].append(rate)
                 await check_for_alerts(coin)
                 await update_tail_order(coin)
-                await check_for_exits(coin)
     except Exception as ex:
         print(ex)
 
