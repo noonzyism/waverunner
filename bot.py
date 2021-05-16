@@ -83,7 +83,7 @@ base_asset = "USD"
 
 holdings = {}
 
-streams = map(lambda s: s.lower() + "usdt@kline_1m", coins)
+streams = map(lambda s: s.lower() + "usdt@kline_5m", coins)
 endpoint = "/".join(streams)
 
 SOCKET = "wss://stream.binance.com:9443/ws/" + endpoint
@@ -92,7 +92,10 @@ opens = { c : [] for c in coins }
 closes = { c : [] for c in coins }
 rates = { c : [] for c in coins }
 prices = { c : 0 for c in coins }
-rsis = { c : [50.0] for c in coins }
+rsis2 = { c : [50.0] for c in coins }
+rsis4 = { c : [50.0] for c in coins }
+rsis14 = { c : [50.0] for c in coins }
+rsis30 = { c : [50.0] for c in coins }
 
 last_msg = "none yet"
 channel = -1 # should start with a default channel but I'm lazy
@@ -253,7 +256,7 @@ async def update_tail_order(coin):
                 order_id = orders[0]['orderId']
                 binance_client.cancel_order(symbol=pair, orderId=order_id)
                 # create new
-                tail_price = xs(curr_price*0.98)
+                tail_price = xs(curr_price*0.97)
                 lim_price = xs(curr_price*0.94)
                 qty = xf(coin, float(orders[0]['origQty']) - float(orders[0]['executedQty']))
                 tail_order = binance_client.create_order(
@@ -302,58 +305,79 @@ async def status():
     await discord_embed(embed)
 
 async def check_for_alerts(coin):
-    global opens, closes, rates, rsis
-    last_2_rates = rates[coin][-2:]
-    # RSI checks
-    rsi = talib.RSI(numpy.array(closes[coin]), 14)
-    last_rsi = rsi[-1]
-    if (math.isnan(last_rsi) != True):
-        rsis[coin].append(last_rsi)
-    rsi_2 = talib.RSI(numpy.array(rsis[coin]), 14)
-    last_rsi2 = rsi_2[-1]
-    if (last_rsi2 < 30):
-        alert = ":grey_exclamation: {} (${}) RSI-2 is at {}".format(coin, round(prices[coin], 3), round(last_rsi2, 3))
-        await discord_message(alert)
-    if (last_rsi2 > 70):
-        alert = ":grey_exclamation: {} (${}) RSI-2 is at {}".format(coin, round(prices[coin], 3), round(last_rsi2, 3))
-        await discord_message(alert)
+    global opens, closes, rates, rsis2, rsis4, rsis14, rsis30
 
-    if len(closes[coin]) % 15 == 0:
-        if (last_rsi < 30):
-            alert = ":chart_with_downwards_trend: {} (${}) RSI is at {}".format(coin, round(prices[coin], 3), round(last_rsi, 3))
-            #await market_buy(coin)
-            await discord_message(alert)
-        if (last_rsi > 70):
-            alert = ":chart_with_upwards_trend: {} (${}) RSI is at {}".format(coin, round(prices[coin], 3), round(last_rsi, 3))
-            #await dump(coin)
-            await discord_message(alert)
+    last_2_rates = rates[coin][-2:]
+    last_rate = sum(rates[coin][-1:])
+    # RSI checks
+    rsi2 = talib.RSI(numpy.array(closes[coin]), 2)
+    if (math.isnan(rsi2[-1]) != True):
+        rsis2[coin].append(rsi2[-1])
+    curr_rsi2 = rsis2[coin][-1] if len(rsis2[coin]) > 0 else 50.0
+    prev_rsi2 = rsis2[coin][-2] if len(rsis2[coin]) > 1 else 50.0
+
+    rsi4 = talib.RSI(numpy.array(closes[coin]), 4)
+    if (math.isnan(rsi4[-1]) != True):
+        rsis4[coin].append(rsi4[-1])
+    curr_rsi4 = rsis4[coin][-1] if len(rsis4[coin]) > 0 else 50.0
+    prev_rsi4 = rsis4[coin][-2] if len(rsis4[coin]) > 1 else 50.0
+
+    rsi14 = talib.RSI(numpy.array(closes[coin]), 14)
+    if (math.isnan(rsi14[-1]) != True):
+        rsis14[coin].append(rsi14[-1])
+    curr_rsi14 = rsis14[coin][-1] if len(rsis14[coin]) > 0 else 50.0
+    prev_rsi14 = rsis14[coin][-2] if len(rsis14[coin]) > 1 else 50.0
+
+    rsi30 = talib.RSI(numpy.array(closes[coin]), 30)
+    if (math.isnan(rsi30[-1]) != True):
+        rsis30[coin].append(rsi30[-1])
+    curr_rsi30 = rsis30[coin][-1] if len(rsis30[coin]) > 0 else 50.0
+    prev_rsi30 = rsis30[coin][-2] if len(rsis30[coin]) > 1 else 50.0
+
+    # rsi-2 buy signal
+    rsi2_leap = curr_rsi2 < 95 and curr_rsi2 > prev_rsi2*9
+    relative_low = prev_rsi30 < 50
+    if (rsi2_leap and relative_low):
+        alert = ":grey_exclamation: {} (${}) Previous RSI-2={}, Current RSI-2={}".format(coin, round(prices[coin], 3), round(prev_rsi2, 3), round(curr_rsi2, 3))
+        await discord_message(alert)
+        await market_buy(coin)
+
     # Surge checks
     s = sum(last_2_rates)
-    if (s > 0.012):
-        alert = ":ocean: {} (${}) over last 2m is surging {}%".format(coin, round(prices[coin], 3), round(s*100, 3))
+    if (s > 0.03):
+        alert = ":ocean: {} (${}) over last 10m is surging {}%".format(coin, round(prices[coin], 3), round(s*100, 3))
         await discord_message(alert)
-        if (last_rsi < 50):
-            alert = ":chart_with_downwards_trend: {} (${}) RSI is at {}".format(coin, round(prices[coin], 3), round(last_rsi, 3))
-            await discord_message(alert)
-            await market_buy(coin)
-    if (s < -0.02):
-        alert = ":small_red_triangle_down: {} (${}) over last 2m has crashed {}%".format(coin, round(prices[coin], 3), round(s*100, 3))
+    if (s < -0.05):
+        alert = ":small_red_triangle_down: {} (${}) over last 10m has crashed {}%".format(coin, round(prices[coin], 3), round(s*100, 3))
         await discord_message(alert)
 
 async def check_for_exits(coin):
     # Short-circuit sell checks
     if coin in holdings:
-        buy_price = holdings[coin]['buy_price']
-        cur_price = prices[coin]
-        buy_time = holdings[coin]['buy_time']
-        cur_time = datetime.datetime.now()
-        gainrate = (cur_price/buy_price) - 1.0
-        if cur_time > buy_time + timedelta(minutes = 20):
-            time_delta = (cur_time - buy_time).seconds/60 # time since buy in minutes
-            # the rule of thumb is any rate of gain better than 2% in 20 mins (or 3% in 30 mins, 4% in 40 mins, etc) is worth exiting
-            # the ratio of rate/time is 1% in 10 mins which is 0.01/10 which is 0.001
-            if gainrate/time_delta > 0.001:
-                await dump(coin)
+        curr_rsi2 = rsis2[coin][-1] if len(rsis2[coin]) > 0 else 50.0
+        curr_rsi4 = rsis4[coin][-1] if len(rsis4[coin]) > 0 else 50.0
+        prev_rsi4 = rsis4[coin][-2] if len(rsis4[coin]) > 1 else 50.0
+        curr_rsi14 = rsis14[coin][-1] if len(rsis14[coin]) > 0 else 50.0
+
+        exit_criteria1 = prev_rsi4 > 90 and (prev_rsi4 > curr_rsi4 + 10)
+        exit_criteria2 = curr_rsi2 + curr_rsi14 > 155
+
+        if (exit_criteria1 or exit_criteria2):
+            await dump(coin)
+
+        # buy_price = holdings[coin]['buy_price']
+        # cur_price = prices[coin]
+        # buy_time = holdings[coin]['buy_time']
+        # cur_time = datetime.datetime.now()
+        # gainrate = (cur_price/buy_price) - 1.0
+        # if cur_time > buy_time + timedelta(minutes = 20):
+        #     time_delta = (cur_time - buy_time).seconds/60 # time since buy in minutes
+        #     # the rule of thumb is any rate of gain better than 2% in 20 mins (or 3% in 30 mins, 4% in 40 mins, etc) is worth exiting
+        #     # the ratio of rate/time is 1% in 10 mins which is 0.01/10 which is 0.001
+        #     if gainrate/time_delta > 0.001:
+        #         await dump(coin)
+        #     if (curr_rsi2 > 98.0 and gainrate > 0.0):
+        #         await dump(coin)
 
 async def output_prices():
     global prices
@@ -490,7 +514,7 @@ async def listener():
                 closes[coin].append(close_price)
                 rates[coin].append(rate)
                 await check_for_alerts(coin)
-                await update_tail_order(coin)
+                #await update_tail_order(coin)
     except Exception as ex:
         print(ex)
 
