@@ -83,7 +83,7 @@ base_asset = "USD"
 
 holdings = {}
 
-streams = map(lambda s: s.lower() + "usdt@kline_5m", coins)
+streams = map(lambda s: s.lower() + "usdt@kline_1m", coins)
 endpoint = "/".join(streams)
 
 SOCKET = "wss://stream.binance.com:9443/ws/" + endpoint
@@ -122,7 +122,7 @@ def xyield(order):
         commission += float(f['commission'])
     return (float(order['executedQty']) - commission)
 
-# derives the max price spent per coin on the given buy order
+# derives the max price spent/received per coin on the given order
 def xprice(order):
     price = 0.0
     for f in order['fills']:
@@ -190,7 +190,7 @@ async def dump(coin):
             print(order)
             if coin in holdings:
                 buy_price = holdings[coin]['buy_price']
-                cur_price = prices[coin]
+                cur_price = xprice(order)
                 gainrate = (cur_price/buy_price) - 1.0
                 await shout(":green_circle: Selling {} at {} for {}%".format(coin, cur_price, round(gainrate*100, 3)))
             holdings.pop(coin, None)
@@ -215,8 +215,8 @@ async def market_buy(coin):
             print(order)
             buy_price = xprice(order)
             qty = xf(coin, xyield(order))
-            tail_price = xs(curr_price*0.98)
-            limit_price = xs(curr_price*0.94) # so that it doesn't get stuck bagholding
+            tail_price = xs(buy_price*0.99)
+            limit_price = xs(curr_price*0.95) # discounted from the trigger price to prevent holding a falling knife
             print("Attempting to place tail with qty={}, trigger={}, limit={}".format(qty, tail_price, buy_price))
             tail_order = binance_client.create_order(
                 symbol=pair, 
@@ -250,25 +250,25 @@ async def update_tail_order(coin):
         if len(orders) > 0:
             curr_price = prices[coin]
             stop_price = float(orders[0]['stopPrice'])
-            if (curr_price*0.97 > stop_price): # stop_price is more than 3% away from the current price, raise it
-                print("Attempting to update tail order for {}".format(coin))
-                # cancel previous
-                order_id = orders[0]['orderId']
-                binance_client.cancel_order(symbol=pair, orderId=order_id)
-                # create new
-                tail_price = xs(curr_price*0.97)
-                lim_price = xs(curr_price*0.94)
-                qty = xf(coin, float(orders[0]['origQty']) - float(orders[0]['executedQty']))
-                tail_order = binance_client.create_order(
-                    symbol=pair, 
-                    side='SELL', 
-                    type='STOP_LOSS_LIMIT',
-                    timeInForce='GTC',
-                    quantity=qty, 
-                    price=lim_price,
-                    stopPrice=tail_price)
-                print(tail_order)
-                await shout(":arrow_double_up: Updated {} tail from {} to {}".format(coin, stop_price, tail_price))
+            # if (curr_price*0.97 > stop_price): # stop_price is more than 3% away from the current price, raise it
+            #     print("Attempting to update tail order for {}".format(coin))
+            #     # cancel previous
+            #     order_id = orders[0]['orderId']
+            #     binance_client.cancel_order(symbol=pair, orderId=order_id)
+            #     # create new
+            #     tail_price = xs(curr_price*0.98)
+            #     lim_price = xs(curr_price*0.94)
+            #     qty = xf(coin, float(orders[0]['origQty']) - float(orders[0]['executedQty']))
+            #     tail_order = binance_client.create_order(
+            #         symbol=pair, 
+            #         side='SELL', 
+            #         type='STOP_LOSS_LIMIT',
+            #         timeInForce='GTC',
+            #         quantity=qty, 
+            #         price=lim_price,
+            #         stopPrice=tail_price)
+            #     print(tail_order)
+            #     await shout(":arrow_double_up: Updated {} tail from {} to {}".format(coin, stop_price, tail_price))
         else:
             # coin has no tail orders, it's safe to assume this coin has been sold or is not being held
             # todo: make a dedicated more precise way of ensuring this holdings list is always in sync with reality
@@ -331,24 +331,55 @@ async def check_for_alerts(coin):
     rsi30 = talib.RSI(numpy.array(closes[coin]), 30)
     if (math.isnan(rsi30[-1]) != True):
         rsis30[coin].append(rsi30[-1])
-    curr_rsi30 = rsis30[coin][-1] if len(rsis30[coin]) > 0 else 50.0
-    prev_rsi30 = rsis30[coin][-2] if len(rsis30[coin]) > 1 else 50.0
+    curr_rsi30 = rsis30[coin][-1] if len(rsis30[coin]) > 0 else 49.0
+    prev_rsi30 = rsis30[coin][-2] if len(rsis30[coin]) > 1 else 49.0
 
-    # rsi-2 buy signal
-    rsi2_leap = curr_rsi2 < 95 and curr_rsi2 > prev_rsi2*9
-    relative_low = prev_rsi30 < 50
-    if (rsi2_leap and relative_low):
-        alert = ":grey_exclamation: {} (${}) Previous RSI-2={}, Current RSI-2={}".format(coin, round(prices[coin], 3), round(prev_rsi2, 3), round(curr_rsi2, 3))
+    curr_close = closes[coin][-1] if len(closes[coin]) > 0 else 0.0
+    prev_close = closes[coin][-2] if len(closes[coin]) > 1 else 0.0
+    prev2_close = closes[coin][-3] if len(closes[coin]) > 2 else 0.0
+
+    meta_rsi14 = talib.RSI(numpy.array(rsis14[coin][:-1]), 14) if len(rsis14[coin]) > 2 else [50.0]
+    prev_meta_rsi14 = meta_rsi14[-1]
+
+    ma = talib.SMA(numpy.array(closes[coin]), 30) if len(closes[coin]) > 1 else [0.0]
+    curr_ma30 = ma[-1] if len(ma) > 0 else 0.0
+
+    mrsi = talib.SMA(numpy.array(rsis4[coin]), 30) if len(rsis4[coin]) > 1 else [50.0]
+    curr_ma30_rsi4 = mrsi[-1] if len(mrsi) > 0 else 50.0
+    prev_ma30_rsi4 = mrsi[-2] if len(mrsi) > 1 else 50.0
+
+    # rsi-4 crossover signal
+    crossover = (prev_rsi4 < prev_ma30_rsi4) and (curr_rsi4 > curr_ma30_rsi4) # detects a shift in momentum
+    tension = curr_close*1.02 < curr_ma30 # detects a significant distance under MA-30, suggesting room for reversal
+    if (crossover and tension):
+        alert = ":twisted_rightwards_arrows: {} (${}) RSI-4 Crossover: {} -> {}, RSI-4 MA-30: {} -> {}".format(
+            coin, 
+            round(prices[coin], 3),
+            round(prev_rsi4, 3),
+            round(curr_rsi4, 3),
+            round(prev_ma30_rsi4, 3),
+            round(curr_ma30_rsi4, 3))
         await discord_message(alert)
         await market_buy(coin)
 
+    # rsi-4 leap signal
+    rsi4_leap = curr_rsi4 > prev_rsi4*4
+    relative_low = prev_meta_rsi14 < 25
+    if (rsi4_leap and relative_low):
+        alert = ":arrow_heading_up: {} (${}) RSI-4 Leap: {} -> {}".format(
+            coin, 
+            round(prices[coin], 3), 
+            round(prev_rsi4, 3), 
+            round(curr_rsi4, 3))
+        await discord_message(alert)
+
     # Surge checks
     s = sum(last_2_rates)
-    if (s > 0.03):
-        alert = ":ocean: {} (${}) over last 10m is surging {}%".format(coin, round(prices[coin], 3), round(s*100, 3))
+    if (s > 0.012):
+        alert = ":ocean: {} (${}) over last 2m is surging {}%".format(coin, round(prices[coin], 3), round(s*100, 3))
         await discord_message(alert)
-    if (s < -0.05):
-        alert = ":small_red_triangle_down: {} (${}) over last 10m has crashed {}%".format(coin, round(prices[coin], 3), round(s*100, 3))
+    if (s < -0.03):
+        alert = ":small_red_triangle_down: {} (${}) over last 2m has crashed {}%".format(coin, round(prices[coin], 3), round(s*100, 3))
         await discord_message(alert)
 
 async def check_for_exits(coin):
@@ -359,10 +390,10 @@ async def check_for_exits(coin):
         prev_rsi4 = rsis4[coin][-2] if len(rsis4[coin]) > 1 else 50.0
         curr_rsi14 = rsis14[coin][-1] if len(rsis14[coin]) > 0 else 50.0
 
-        exit_criteria1 = prev_rsi4 > 90 and (prev_rsi4 > curr_rsi4 + 10)
-        exit_criteria2 = curr_rsi2 + curr_rsi14 > 155
+        exit_criteria1 = prev_rsi4 > 80 and (prev_rsi4 > curr_rsi4 + 10)
+        #exit_criteria2 = curr_rsi2 + curr_rsi14 > 155
 
-        if (exit_criteria1 or exit_criteria2):
+        if (exit_criteria1):
             await dump(coin)
 
         # buy_price = holdings[coin]['buy_price']
@@ -386,6 +417,13 @@ async def output_prices():
         price = round(prices[coin], 3)
         embed.add_field(name=coin, value=price)
     await discord_embed(embed)
+
+async def output_rsis(coin):
+        msg = "RSI-2: {}".format(rsis2[coin])
+        msg += " RSI-4: {}".format(rsis4[coin])
+        msg += " RSI-14: {}".format(rsis14[coin])
+        msg += " RSI-30: {}".format(rsis30[coin])
+        await shout(msg)
 
 #########################################################################################################
 # Discord Callbacks
@@ -428,6 +466,10 @@ async def on_message(message):
                     elif command == "balance":
                         await discord_message("{} balance is: {}".format(base_asset, balance(base_asset)))
 
+                    elif command == "gethype":
+                        await discord_message("""**BIG GAINS ONLY** 
+https://tenor.com/view/lobster-muscles-angry-spongebob-gif-11346320""")
+
                     elif command == "holding":
                         if (len(holdings) > 0):
                             embed = discord.Embed(title="Current holding(s):")
@@ -446,6 +488,11 @@ async def on_message(message):
                         second_arg = command.replace('price','').strip()
                         if (second_arg in prices):
                             await discord_message("{} price is currently {}".format(second_arg, prices[second_arg]))
+
+                    elif command.startswith("rsis"):
+                        second_arg = command.replace('rsis','').strip()
+                        if (second_arg in prices):
+                            await output_rsis(second_arg)
 
                     elif command.startswith("buy"):
                         second_arg = command.replace('buy','').strip()
@@ -509,12 +556,17 @@ async def listener():
                 #print(message)
                 open_price = float(candle['o'])
                 close_price = float(candle['c'])
+                high_price = float(candle['h'])
+                low_price = float(candle['l'])
                 rate = (close_price/open_price) - 1.0
-                opens[coin].append(open_price)
-                closes[coin].append(close_price)
+                heikin_open = 0.5 * (opens[coin][-1] + closes[coin][-1]) if (len(opens[coin]) > 0 and len(closes[coin]) > 0) else open_price
+                heikin_close = 0.25 * (open_price + high_price + low_price + close_price)
+
+                opens[coin].append(heikin_open)
+                closes[coin].append(heikin_close)
                 rates[coin].append(rate)
                 await check_for_alerts(coin)
-                #await update_tail_order(coin)
+                await update_tail_order(coin)
     except Exception as ex:
         print(ex)
 
