@@ -63,7 +63,7 @@ precisions = {
     "ATOM": 1000.0,
     "ZRX": 100.0,
     "KNC": 1000.0,
-    "HNT": 1000.0,
+    "HNT": 100.0,
     "MATIC": 10.0,
     "LINK": 100.0,
     "MANA": 100.0,
@@ -215,7 +215,7 @@ async def market_buy(coin):
             print(order)
             buy_price = xprice(order)
             qty = xf(coin, xyield(order))
-            tail_price = xs(buy_price*0.99)
+            tail_price = xs(buy_price*0.987)
             limit_price = xs(curr_price*0.95) # discounted from the trigger price to prevent holding a falling knife
             print("Attempting to place tail with qty={}, trigger={}, limit={}".format(qty, tail_price, buy_price))
             tail_order = binance_client.create_order(
@@ -240,6 +240,19 @@ async def market_buy(coin):
         traceback.print_exc()
         return False
     return True
+
+async def check_if_still_holding(coin):
+    try:
+        if coin in holdings:
+            pair = coin + base_asset
+            orders = binance_client.get_open_orders(symbol=pair)
+            if len(orders) <= 0:
+                # coin has no tail orders, it's safe to assume this coin has been sold or is not being held
+                # todo: make a dedicated more precise way of ensuring this holdings list is always in sync with reality
+                holdings.pop(coin, None)
+    except Exception as e:
+        await shout("an exception occured - {}".format(e))
+        traceback.print_exc()
 
 # updates (if necessary) the stop-limit-sell order of the given pair to trail 2% behind the current price
 # assumption: there is at most one stop-limit order for any given pair
@@ -566,7 +579,7 @@ async def listener():
                 closes[coin].append(heikin_close)
                 rates[coin].append(rate)
                 await check_for_alerts(coin)
-                await update_tail_order(coin)
+                await check_if_still_holding(coin)
     except Exception as ex:
         print(ex)
 
