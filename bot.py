@@ -375,6 +375,12 @@ async def check_for_alerts(coin):
         await discord_message(alert)
         await market_buy(coin)
 
+    # rsi-4 crossunder signal
+    crossunder = (prev_rsi4 > prev_ma30_rsi4) and (curr_rsi4 < curr_ma30_rsi4)
+    if (crossunder):
+        if coin in holdings:
+            await dump(coin)
+
     # rsi-4 leap signal
     rsi4_leap = curr_rsi4 > prev_rsi4*4
     relative_low = prev_meta_rsi14 < 25
@@ -391,6 +397,9 @@ async def check_for_alerts(coin):
     if (s > 0.012):
         alert = ":ocean: {} (${}) over last 2m is surging {}%".format(coin, round(prices[coin], 3), round(s*100, 3))
         await discord_message(alert)
+        if (curr_rsi4 - curr_ma30_rsi4 < 20):
+            await market_buy(coin)
+        #await market_buy(coin)
     if (s < -0.03):
         alert = ":small_red_triangle_down: {} (${}) over last 2m has crashed {}%".format(coin, round(prices[coin], 3), round(s*100, 3))
         await discord_message(alert)
@@ -564,7 +573,7 @@ async def listener():
             coin = candle['s'].replace('USDT', '')
             is_candle_closed = candle['x']
             prices[coin] = float(candle['c'])
-            await check_for_exits(coin)
+            # await check_for_exits(coin)
             if is_candle_closed:
                 #print(message)
                 open_price = float(candle['o'])
