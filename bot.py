@@ -83,6 +83,8 @@ base_asset = "USD"
 
 holdings = {}
 
+MIN_HOLD_TIME = 5 # minimum time to hold a trade in minutes (not including stop loss sells)
+
 streams = map(lambda s: s.lower() + "usdt@kline_1m", coins)
 endpoint = "/".join(streams)
 
@@ -126,15 +128,28 @@ def rsi4_crossover(context):
     prev_ma30_rsi4 = mrsi[-2] if len(mrsi) > 1 else 50.0
     return (prev_rsi4 < prev_ma30_rsi4) and (curr_rsi4 > curr_ma30_rsi4) # detects a shift in momentum
 
+def rsi4_crossunder(context):
+    mrsi = talib.SMA(numpy.array(context["rsi-4"]), 30) if len(context["rsi-4"]) > 1 else [50.0]
+    curr_rsi4 = context["rsi-4"][-1] if len(context["rsi-4"]) > 0 else 50.0
+    prev_rsi4 = context["rsi-4"][-2] if len(context["rsi-4"]) > 1 else 50.0
+    curr_ma30_rsi4 = mrsi[-1] if len(mrsi) > 0 else 50.0
+    prev_ma30_rsi4 = mrsi[-2] if len(mrsi) > 1 else 50.0
+    return (prev_rsi4 > prev_ma30_rsi4) and (curr_rsi4 < curr_ma30_rsi4) # detects a shift in momentum
+
 signals = [
     surge,
     crash,
-    rsi4_crossover
+    rsi4_crossover,
+    rsi4_crossunder
 ]
 
 buy_criteria = [
     (surge, 0),
     (rsi4_crossover, 3)
+]
+
+sell_criteria = [
+    (rsi4_crossunder, 0)
 ]
 
 timeSince = { c : { s.__name__ : 9999 for s in signals } for c in coins }
@@ -322,6 +337,8 @@ async def status():
     await discord_embed(embed)
 
 async def on_candle_close(coin):
+    global data, timeSince, buy_criteria, sell_criteria, MIN_HOLD_TIME
+    await check_if_still_holding(coin)
     for signal in signals:
         if (signal(data[coin])):
             #await discord_message("'{}' signal detected for {}.".format(signal.__name__, coin))
@@ -331,10 +348,9 @@ async def on_candle_close(coin):
                 s = sum(last_2_rates)
                 alert = ":ocean: {} (${}) over last 2m is surging {}%".format(coin, round(data[coin]["close"][-1], 3), round(s*100, 3))
                 await discord_message(alert)
-            else:
-                await discord_message(":exclamation: {} detected for {} (${})".format(signal.__name__, coin, round(data[coin]["close"][-1], 3)))
         else:
             timeSince[coin][signal.__name__] += 1
+
     buy = False if len(buy_criteria) <= 0 else True
     for criteria in buy_criteria:
         signal = criteria[0].__name__
@@ -343,7 +359,19 @@ async def on_candle_close(coin):
     if (buy):
         #await discord_message("Buy criteria met for {}".format(coin))
         await market_buy(coin)
-    await check_if_still_holding(coin)
+
+    if coin in holdings:
+        buy_time = holdings[coin]['buy_time']
+        cur_time = datetime.datetime.now()
+        newly_bought = cur_time < buy_time + timedelta(minutes = MIN_HOLD_TIME):
+        sell = False if (len(sell_criteria) <= 0 or newly_bought) else True
+        for criteria in sell_criteria:
+            signal = criteria[0].__name__
+            since = criteria[1]
+            sell = sell and (timeSince[coin][signal] <= since)
+        if (sell):
+            #await discord_message("Buy criteria met for {}".format(coin))
+            await dump(coin)
 
 async def output_prices():
     embed = discord.Embed(title="Latest coin prices:")
@@ -353,6 +381,7 @@ async def output_prices():
     await discord_embed(embed)
 
 async def output_rsis(coin):
+        global data
         msg = "RSI-2: {}".format(data[coin]["rsi-2"])
         msg += " RSI-4: {}".format(data[coin]["rsi-4"])
         msg += " RSI-14: {}".format(data[coin]["rsi-14"])
@@ -515,7 +544,10 @@ def update_data(coin, new_open, new_close, new_rate):
     data[coin]["close"].append(new_close)
     data[coin]["rate"].append(new_rate)
 
+    #print("rsi2s for {}: {}".format(coin, (data[coin]["rsi-2"])))
+
     rsi2 = talib.RSI(numpy.array(data[coin]["close"]), 2)
+    #print("rsi2 for {}: {}".format(coin, rsi2))
     if (math.isnan(rsi2[-1]) != True):
         data[coin]["rsi-2"].append(rsi2[-1])
 
