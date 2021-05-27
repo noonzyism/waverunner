@@ -104,6 +104,31 @@ binance_client = Client(config.API_KEY, config.API_SECRET, tld='us')
 discord_client = discord.Client()
 
 #########################################################################################################
+# Signals
+#########################################################################################################
+def surge(r):
+    last_2_rates = r[-2:]
+    s = sum(last_2_rates)
+    return (s > 0.012)
+
+def crash(r):
+    last_2_rates = r[-2:]
+    s = sum(last_2_rates)
+    return (s < 0)
+
+signals = [
+    surge,
+    crash
+]
+
+buy_criteria = [
+    (surge, 0),
+    (crash, 5)
+]
+
+timeSince = { c : { s.__name__ : 999 for s in signals } for c in coins }
+
+#########################################################################################################
 # Helpers
 #########################################################################################################
 # truncates the given float to N decimal places, returned as a float (typically used for quantities)
@@ -137,38 +162,6 @@ async def shout(msg):
 #########################################################################################################
 # Binance Interaction
 #########################################################################################################
-# def binance_market_buy(pair, quantity):
-#     success = False
-#     tries = 0
-#     max_retry = 5
-#     qty = xf()
-#     while (success == False and tries < max_retry):
-#         try:
-#             order = binance_client.order_market_sell(symbol=pair, quantity=qty)
-#             success = True
-#         except Exception as e:
-#             success = False
-#         tries += 1
-#         # lower qty precision
-
-# gets the decimal precision (LOT_SIZE) of the coin, or a default precision
-# def precision(coin):
-#     p = 1.0
-#     if (precisions[coin] == -1):
-#         pair = coin + "USDT"
-#         info = binance_client.get_symbol_info(pair)
-#         print("coin info = {}", info)
-#         f = [i["stepSize"] for i in info["filters"] if i["filterType"] == "LOT_SIZE"][0] # annoying but does the job
-#         if (f.index("1") > 0):
-#             p = math.pow(10.0, f.index("1") - 1)
-#             precisions[coin] = p
-#         else:
-#             p = 1.0
-#             precisions[coin] = p
-#         return p
-#     else:
-#         return precisions[coin]
-
 # gets the current USD balance
 def balance(coin):
     response = binance_client.get_asset_balance(asset=coin)
@@ -241,6 +234,7 @@ async def market_buy(coin):
         return False
     return True
 
+# checks and updates holding state
 async def check_if_still_holding(coin):
     try:
         if coin in holdings:
@@ -263,25 +257,25 @@ async def update_tail_order(coin):
         if len(orders) > 0:
             curr_price = prices[coin]
             stop_price = float(orders[0]['stopPrice'])
-            # if (curr_price*0.97 > stop_price): # stop_price is more than 3% away from the current price, raise it
-            #     print("Attempting to update tail order for {}".format(coin))
-            #     # cancel previous
-            #     order_id = orders[0]['orderId']
-            #     binance_client.cancel_order(symbol=pair, orderId=order_id)
-            #     # create new
-            #     tail_price = xs(curr_price*0.98)
-            #     lim_price = xs(curr_price*0.94)
-            #     qty = xf(coin, float(orders[0]['origQty']) - float(orders[0]['executedQty']))
-            #     tail_order = binance_client.create_order(
-            #         symbol=pair, 
-            #         side='SELL', 
-            #         type='STOP_LOSS_LIMIT',
-            #         timeInForce='GTC',
-            #         quantity=qty, 
-            #         price=lim_price,
-            #         stopPrice=tail_price)
-            #     print(tail_order)
-            #     await shout(":arrow_double_up: Updated {} tail from {} to {}".format(coin, stop_price, tail_price))
+            if (curr_price*0.97 > stop_price): # stop_price is more than 3% away from the current price, raise it
+                print("Attempting to update tail order for {}".format(coin))
+                # cancel previous
+                order_id = orders[0]['orderId']
+                binance_client.cancel_order(symbol=pair, orderId=order_id)
+                # create new
+                tail_price = xs(curr_price*0.98)
+                lim_price = xs(curr_price*0.94)
+                qty = xf(coin, float(orders[0]['origQty']) - float(orders[0]['executedQty']))
+                tail_order = binance_client.create_order(
+                    symbol=pair, 
+                    side='SELL', 
+                    type='STOP_LOSS_LIMIT',
+                    timeInForce='GTC',
+                    quantity=qty, 
+                    price=lim_price,
+                    stopPrice=tail_price)
+                print(tail_order)
+                await shout(":arrow_double_up: Updated {} tail from {} to {}".format(coin, stop_price, tail_price))
         else:
             # coin has no tail orders, it's safe to assume this coin has been sold or is not being held
             # todo: make a dedicated more precise way of ensuring this holdings list is always in sync with reality
@@ -317,120 +311,23 @@ async def status():
         embed.add_field(name=coin, value=status)
     await discord_embed(embed)
 
-async def check_for_alerts(coin):
-    global opens, closes, rates, rsis2, rsis4, rsis14, rsis30
+async def check_for_signals(coin):
+    for signal in signals:
+        if (signal(rates[coin])):
+            await discord_message("'{}' signal detected for {}.".format(signal.__name__, coin))
+            timeSince[coin][signal.__name__] = 0
+        else:
+            timeSince[coin][signal.__name__] += 1
+    
+    buy = False if len(buy_criteria) <= 0 else True
 
-    last_2_rates = rates[coin][-2:]
-    last_rate = sum(rates[coin][-1:])
-    # RSI checks
-    rsi2 = talib.RSI(numpy.array(closes[coin]), 2)
-    if (math.isnan(rsi2[-1]) != True):
-        rsis2[coin].append(rsi2[-1])
-    curr_rsi2 = rsis2[coin][-1] if len(rsis2[coin]) > 0 else 50.0
-    prev_rsi2 = rsis2[coin][-2] if len(rsis2[coin]) > 1 else 50.0
+    for criteria in buy_criteria:
+        signal = criteria[0].__name__
+        since = criteria[1]
+        buy = buy and (timeSince[coin][signal] <= since)
 
-    rsi4 = talib.RSI(numpy.array(closes[coin]), 4)
-    if (math.isnan(rsi4[-1]) != True):
-        rsis4[coin].append(rsi4[-1])
-    curr_rsi4 = rsis4[coin][-1] if len(rsis4[coin]) > 0 else 50.0
-    prev_rsi4 = rsis4[coin][-2] if len(rsis4[coin]) > 1 else 50.0
-
-    rsi14 = talib.RSI(numpy.array(closes[coin]), 14)
-    if (math.isnan(rsi14[-1]) != True):
-        rsis14[coin].append(rsi14[-1])
-    curr_rsi14 = rsis14[coin][-1] if len(rsis14[coin]) > 0 else 50.0
-    prev_rsi14 = rsis14[coin][-2] if len(rsis14[coin]) > 1 else 50.0
-
-    rsi30 = talib.RSI(numpy.array(closes[coin]), 30)
-    if (math.isnan(rsi30[-1]) != True):
-        rsis30[coin].append(rsi30[-1])
-    curr_rsi30 = rsis30[coin][-1] if len(rsis30[coin]) > 0 else 49.0
-    prev_rsi30 = rsis30[coin][-2] if len(rsis30[coin]) > 1 else 49.0
-
-    curr_close = closes[coin][-1] if len(closes[coin]) > 0 else 0.0
-    prev_close = closes[coin][-2] if len(closes[coin]) > 1 else 0.0
-    prev2_close = closes[coin][-3] if len(closes[coin]) > 2 else 0.0
-
-    meta_rsi14 = talib.RSI(numpy.array(rsis14[coin][:-1]), 14) if len(rsis14[coin]) > 2 else [50.0]
-    prev_meta_rsi14 = meta_rsi14[-1]
-
-    ma = talib.SMA(numpy.array(closes[coin]), 30) if len(closes[coin]) > 1 else [0.0]
-    curr_ma30 = ma[-1] if len(ma) > 0 else 0.0
-
-    mrsi = talib.SMA(numpy.array(rsis4[coin]), 30) if len(rsis4[coin]) > 1 else [50.0]
-    curr_ma30_rsi4 = mrsi[-1] if len(mrsi) > 0 else 50.0
-    prev_ma30_rsi4 = mrsi[-2] if len(mrsi) > 1 else 50.0
-
-    # rsi-4 crossover signal
-    crossover = (prev_rsi4 < prev_ma30_rsi4) and (curr_rsi4 > curr_ma30_rsi4) # detects a shift in momentum
-    tension = curr_close*1.02 < curr_ma30 # detects a significant distance under MA-30, suggesting room for reversal
-    if (crossover and tension):
-        alert = ":twisted_rightwards_arrows: {} (${}) RSI-4 Crossover: {} -> {}, RSI-4 MA-30: {} -> {}".format(
-            coin, 
-            round(prices[coin], 3),
-            round(prev_rsi4, 3),
-            round(curr_rsi4, 3),
-            round(prev_ma30_rsi4, 3),
-            round(curr_ma30_rsi4, 3))
-        await discord_message(alert)
-        await market_buy(coin)
-
-    # rsi-4 crossunder signal
-    crossunder = (prev_rsi4 > prev_ma30_rsi4) and (curr_rsi4 < curr_ma30_rsi4)
-    if (crossunder):
-        if coin in holdings:
-            await dump(coin)
-
-    # rsi-4 leap signal
-    rsi4_leap = curr_rsi4 > prev_rsi4*4
-    relative_low = prev_meta_rsi14 < 25
-    if (rsi4_leap and relative_low):
-        alert = ":arrow_heading_up: {} (${}) RSI-4 Leap: {} -> {}".format(
-            coin, 
-            round(prices[coin], 3), 
-            round(prev_rsi4, 3), 
-            round(curr_rsi4, 3))
-        await discord_message(alert)
-
-    # Surge checks
-    s = sum(last_2_rates)
-    if (s > 0.012):
-        alert = ":ocean: {} (${}) over last 2m is surging {}%".format(coin, round(prices[coin], 3), round(s*100, 3))
-        await discord_message(alert)
-        if (curr_rsi4 - curr_ma30_rsi4 < 20):
-            await market_buy(coin)
-        #await market_buy(coin)
-    if (s < -0.03):
-        alert = ":small_red_triangle_down: {} (${}) over last 2m has crashed {}%".format(coin, round(prices[coin], 3), round(s*100, 3))
-        await discord_message(alert)
-
-async def check_for_exits(coin):
-    # Short-circuit sell checks
-    if coin in holdings:
-        curr_rsi2 = rsis2[coin][-1] if len(rsis2[coin]) > 0 else 50.0
-        curr_rsi4 = rsis4[coin][-1] if len(rsis4[coin]) > 0 else 50.0
-        prev_rsi4 = rsis4[coin][-2] if len(rsis4[coin]) > 1 else 50.0
-        curr_rsi14 = rsis14[coin][-1] if len(rsis14[coin]) > 0 else 50.0
-
-        exit_criteria1 = prev_rsi4 > 80 and (prev_rsi4 > curr_rsi4 + 10)
-        #exit_criteria2 = curr_rsi2 + curr_rsi14 > 155
-
-        if (exit_criteria1):
-            await dump(coin)
-
-        # buy_price = holdings[coin]['buy_price']
-        # cur_price = prices[coin]
-        # buy_time = holdings[coin]['buy_time']
-        # cur_time = datetime.datetime.now()
-        # gainrate = (cur_price/buy_price) - 1.0
-        # if cur_time > buy_time + timedelta(minutes = 20):
-        #     time_delta = (cur_time - buy_time).seconds/60 # time since buy in minutes
-        #     # the rule of thumb is any rate of gain better than 2% in 20 mins (or 3% in 30 mins, 4% in 40 mins, etc) is worth exiting
-        #     # the ratio of rate/time is 1% in 10 mins which is 0.01/10 which is 0.001
-        #     if gainrate/time_delta > 0.001:
-        #         await dump(coin)
-        #     if (curr_rsi2 > 98.0 and gainrate > 0.0):
-        #         await dump(coin)
+    if (buy):
+        await discord_message("Buy criteria met for {}".format(coin))
 
 async def output_prices():
     global prices
@@ -516,6 +413,16 @@ https://tenor.com/view/lobster-muscles-angry-spongebob-gif-11346320""")
                         if (second_arg in prices):
                             await output_rsis(second_arg)
 
+                    elif command.startswith("signals"):
+                        second_arg = command.replace('signals','').strip()
+                        if (second_arg in timeSince):
+                            embed = discord.Embed(title="{} Signals:".format(second_arg))
+                            for signal in timeSince[second_arg]:
+                                msg = "{} minutes ago".format(timeSince[second_arg][signal])
+                                print(msg)
+                                embed.add_field(name=signal, value=msg)
+                            await discord_embed(embed)
+
                     elif command.startswith("buy"):
                         second_arg = command.replace('buy','').strip()
                         if (message.author.id == config.OWNER_USERID):
@@ -573,9 +480,7 @@ async def listener():
             coin = candle['s'].replace('USDT', '')
             is_candle_closed = candle['x']
             prices[coin] = float(candle['c'])
-            # await check_for_exits(coin)
             if is_candle_closed:
-                #print(message)
                 open_price = float(candle['o'])
                 close_price = float(candle['c'])
                 high_price = float(candle['h'])
@@ -587,7 +492,7 @@ async def listener():
                 opens[coin].append(heikin_open)
                 closes[coin].append(heikin_close)
                 rates[coin].append(rate)
-                await check_for_alerts(coin)
+                await check_for_signals(coin)
                 await check_if_still_holding(coin)
     except Exception as ex:
         print(ex)
