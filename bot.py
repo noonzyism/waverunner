@@ -88,14 +88,16 @@ endpoint = "/".join(streams)
 
 SOCKET = "wss://stream.binance.com:9443/ws/" + endpoint
 
-opens = { c : [] for c in coins }
-closes = { c : [] for c in coins }
-rates = { c : [] for c in coins }
-prices = { c : 0 for c in coins }
-rsis2 = { c : [50.0] for c in coins }
-rsis4 = { c : [50.0] for c in coins }
-rsis14 = { c : [50.0] for c in coins }
-rsis30 = { c : [50.0] for c in coins }
+data = { c : {
+    "price": 0.0,
+    "open": [],
+    "close": [],
+    "rate": [],
+    "rsi-2": [],
+    "rsi-4": [],
+    "rsi-14": [],
+    "rsi-30": []
+} for c in coins }
 
 last_msg = "none yet"
 channel = -1 # should start with a default channel but I'm lazy
@@ -106,27 +108,36 @@ discord_client = discord.Client()
 #########################################################################################################
 # Signals
 #########################################################################################################
-def surge(r):
-    last_2_rates = r[-2:]
+def surge(context):
+    last_2_rates = context["rate"][-2:]
     s = sum(last_2_rates)
     return (s > 0.012)
 
-def crash(r):
-    last_2_rates = r[-2:]
+def crash(context):
+    last_2_rates = context["rate"][-2:]
     s = sum(last_2_rates)
-    return (s < 0)
+    return (s < -0.03)
+
+def rsi4_crossover(context):
+    mrsi = talib.SMA(numpy.array(context["rsi-4"]), 30) if len(context["rsi-4"]) > 1 else [50.0]
+    curr_rsi4 = context["rsi-4"][-1] if len(context["rsi-4"]) > 0 else 50.0
+    prev_rsi4 = context["rsi-4"][-2] if len(context["rsi-4"]) > 1 else 50.0
+    curr_ma30_rsi4 = mrsi[-1] if len(mrsi) > 0 else 50.0
+    prev_ma30_rsi4 = mrsi[-2] if len(mrsi) > 1 else 50.0
+    return (prev_rsi4 < prev_ma30_rsi4) and (curr_rsi4 > curr_ma30_rsi4) # detects a shift in momentum
 
 signals = [
     surge,
-    crash
+    crash,
+    rsi4_crossover
 ]
 
 buy_criteria = [
     (surge, 0),
-    (crash, 5)
+    (rsi4_crossover, 3)
 ]
 
-timeSince = { c : { s.__name__ : 999 for s in signals } for c in coins }
+timeSince = { c : { s.__name__ : 9999 for s in signals } for c in coins }
 
 #########################################################################################################
 # Helpers
@@ -200,7 +211,7 @@ async def market_buy(coin):
     bal = balance(base_asset)
     try:
         if (bal > 50.0):
-            curr_price = prices[coin]
+            curr_price = data[coin]["price"]
             qty = xf(coin, bal/curr_price * 0.99) # the .99 is to discount a bit in case the price has already gone beyond this
             print("Attempting market buy of {} units of {}".format(qty, coin))
             pair = coin + base_asset
@@ -255,7 +266,7 @@ async def update_tail_order(coin):
         pair = coin + base_asset
         orders = binance_client.get_open_orders(symbol=pair)
         if len(orders) > 0:
-            curr_price = prices[coin]
+            curr_price = data[coin]["price"]
             stop_price = float(orders[0]['stopPrice'])
             if (curr_price*0.97 > stop_price): # stop_price is more than 3% away from the current price, raise it
                 print("Attempting to update tail order for {}".format(coin))
@@ -301,47 +312,50 @@ async def cancel_tail_order(coin):
 # Alerting/Status Check
 #########################################################################################################
 async def status():
-    global opens, closes, rates
     embed = discord.Embed(title="Latest coin statuses:")
-    for coin in rates:
-        last_2_rates = rates[coin][-2:]
+    for coin in coins:
+        last_2_rates = data[coin]["rate"][-2:]
         s = sum(last_2_rates)
         status = "{} rate over last 2m is {}%".format(coin, round(s*100, 3))
         print(status)
         embed.add_field(name=coin, value=status)
     await discord_embed(embed)
 
-async def check_for_signals(coin):
+async def on_candle_close(coin):
     for signal in signals:
-        if (signal(rates[coin])):
-            await discord_message("'{}' signal detected for {}.".format(signal.__name__, coin))
+        if (signal(data[coin])):
+            #await discord_message("'{}' signal detected for {}.".format(signal.__name__, coin))
             timeSince[coin][signal.__name__] = 0
+            if (signal.__name__ == "surge"):
+                last_2_rates = data[coin]["rate"][-2:]
+                s = sum(last_2_rates)
+                alert = ":ocean: {} (${}) over last 2m is surging {}%".format(coin, round(data[coin]["close"], 3), round(s*100, 3))
+                await discord_message(alert)
+            else:
+                await discord_message(":exclamation: {} detected for {} (${})".format(signal.__name__, coin, round(data[coin]["close"], 3)))
         else:
             timeSince[coin][signal.__name__] += 1
-    
     buy = False if len(buy_criteria) <= 0 else True
-
     for criteria in buy_criteria:
         signal = criteria[0].__name__
         since = criteria[1]
         buy = buy and (timeSince[coin][signal] <= since)
-
     if (buy):
         await discord_message("Buy criteria met for {}".format(coin))
+    await check_if_still_holding(coin)
 
 async def output_prices():
-    global prices
     embed = discord.Embed(title="Latest coin prices:")
-    for coin in rates:
-        price = round(prices[coin], 3)
+    for coin in coins:
+        price = round(data[coin]["price"], 3)
         embed.add_field(name=coin, value=price)
     await discord_embed(embed)
 
 async def output_rsis(coin):
-        msg = "RSI-2: {}".format(rsis2[coin])
-        msg += " RSI-4: {}".format(rsis4[coin])
-        msg += " RSI-14: {}".format(rsis14[coin])
-        msg += " RSI-30: {}".format(rsis30[coin])
+        msg = "RSI-2: {}".format(data[coin]["rsi-2"])
+        msg += " RSI-4: {}".format(data[coin]["rsi-4"])
+        msg += " RSI-14: {}".format(data[coin]["rsi-14"])
+        msg += " RSI-30: {}".format(data[coin]["rsi-30"])
         await shout(msg)
 
 #########################################################################################################
@@ -394,7 +408,7 @@ https://tenor.com/view/lobster-muscles-angry-spongebob-gif-11346320""")
                             embed = discord.Embed(title="Current holding(s):")
                             for coin in holdings:
                                 buy_price = holdings[coin]['buy_price']
-                                cur_price = prices[coin]
+                                cur_price = data[coin]["price"]
                                 buy_time = holdings[coin]['buy_time']
                                 cur_time = datetime.datetime.now()
                                 time_delta = (cur_time - buy_time).seconds/60
@@ -405,12 +419,12 @@ https://tenor.com/view/lobster-muscles-angry-spongebob-gif-11346320""")
 
                     elif command.startswith("price"):
                         second_arg = command.replace('price','').strip()
-                        if (second_arg in prices):
-                            await discord_message("{} price is currently {}".format(second_arg, prices[second_arg]))
+                        if (second_arg in data):
+                            await discord_message("{} price is currently {}".format(second_arg, data[second_arg]["price"]))
 
                     elif command.startswith("rsis"):
                         second_arg = command.replace('rsis','').strip()
-                        if (second_arg in prices):
+                        if (second_arg in data):
                             await output_rsis(second_arg)
 
                     elif command.startswith("signals"):
@@ -418,15 +432,15 @@ https://tenor.com/view/lobster-muscles-angry-spongebob-gif-11346320""")
                         if (second_arg in timeSince):
                             embed = discord.Embed(title="{} Signals:".format(second_arg))
                             for signal in timeSince[second_arg]:
-                                msg = "{} minutes ago".format(timeSince[second_arg][signal])
-                                print(msg)
+                                timeAgo = timeSince[second_arg][signal]
+                                msg = "{} minutes ago".format(timeAgo) if timeAgo < 9999 else "never"
                                 embed.add_field(name=signal, value=msg)
                             await discord_embed(embed)
 
                     elif command.startswith("buy"):
                         second_arg = command.replace('buy','').strip()
                         if (message.author.id == config.OWNER_USERID):
-                            if (second_arg in prices):
+                            if (second_arg in data):
                                 await market_buy(second_arg)
                             else:
                                 await discord_message("Unable to purchase {}".format(second_arg))
@@ -479,23 +493,42 @@ async def listener():
             candle = json_message['k']
             coin = candle['s'].replace('USDT', '')
             is_candle_closed = candle['x']
-            prices[coin] = float(candle['c'])
+            data[coin]["price"] = float(candle['c'])
             if is_candle_closed:
                 open_price = float(candle['o'])
                 close_price = float(candle['c'])
                 high_price = float(candle['h'])
                 low_price = float(candle['l'])
                 rate = (close_price/open_price) - 1.0
-                heikin_open = 0.5 * (opens[coin][-1] + closes[coin][-1]) if (len(opens[coin]) > 0 and len(closes[coin]) > 0) else open_price
+                heikin_open = 0.5 * (data[coin]["open"][-1] + data[coin]["close"][-1]) if (len(data[coin]["open"]) > 0 and len(data[coin]["close"]) > 0) else open_price
                 heikin_close = 0.25 * (open_price + high_price + low_price + close_price)
-
-                opens[coin].append(heikin_open)
-                closes[coin].append(heikin_close)
-                rates[coin].append(rate)
-                await check_for_signals(coin)
-                await check_if_still_holding(coin)
+                data[coin]["open"].append(heikin_open)
+                data[coin]["close"].append(heikin_close)
+                data[coin]["rate"].append(rate)
+                await on_candle_close(coin)
     except Exception as ex:
         print(ex)
+
+async def update_data(coin, new_open, new_close, new_rate):
+    data[coin]["open"].append(new_open)
+    data[coin]["close"].append(new_close)
+    data[coin]["rate"].append(new_rate)
+
+    rsi2 = talib.RSI(numpy.array(data[coin]["close"]), 2)
+    if (math.isnan(rsi2[-1]) != True):
+        data[coin]["rsi-2"].append(rsi2[-1])
+
+    rsi4 = talib.RSI(numpy.array(data[coin]["close"]), 4)
+    if (math.isnan(rsi4[-1]) != True):
+        data[coin]["rsi-4"].append(rsi4[-1])
+
+    rsi14 = talib.RSI(numpy.array(data[coin]["close"]), 14)
+    if (math.isnan(rsi14[-1]) != True):
+        data[coin]["rsi-14"].append(rsi14[-1])
+
+    rsi30 = talib.RSI(numpy.array(data[coin]["close"]), 30)
+    if (math.isnan(rsi30[-1]) != True):
+        data[coin]["rsi-30"].append(rsi30[-1])
 
 if __name__ == '__main__':
     print('Initializing')
