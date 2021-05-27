@@ -329,10 +329,10 @@ async def on_candle_close(coin):
             if (signal.__name__ == "surge"):
                 last_2_rates = data[coin]["rate"][-2:]
                 s = sum(last_2_rates)
-                alert = ":ocean: {} (${}) over last 2m is surging {}%".format(coin, round(data[coin]["close"], 3), round(s*100, 3))
+                alert = ":ocean: {} (${}) over last 2m is surging {}%".format(coin, round(data[coin]["close"][-1], 3), round(s*100, 3))
                 await discord_message(alert)
             else:
-                await discord_message(":exclamation: {} detected for {} (${})".format(signal.__name__, coin, round(data[coin]["close"], 3)))
+                await discord_message(":exclamation: {} detected for {} (${})".format(signal.__name__, coin, round(data[coin]["close"][-1], 3)))
         else:
             timeSince[coin][signal.__name__] += 1
     buy = False if len(buy_criteria) <= 0 else True
@@ -341,7 +341,8 @@ async def on_candle_close(coin):
         since = criteria[1]
         buy = buy and (timeSince[coin][signal] <= since)
     if (buy):
-        await discord_message("Buy criteria met for {}".format(coin))
+        #await discord_message("Buy criteria met for {}".format(coin))
+        await market_buy(coin)
     await check_if_still_holding(coin)
 
 async def output_prices():
@@ -485,7 +486,7 @@ async def init_connection():
     websocket = await websockets.connect(SOCKET)
 
 async def listener():
-    global opens, closes, rates, prices, last_msg
+    global data, last_msg
     try:
         async for message in websocket:
             last_msg = message
@@ -502,14 +503,14 @@ async def listener():
                 rate = (close_price/open_price) - 1.0
                 heikin_open = 0.5 * (data[coin]["open"][-1] + data[coin]["close"][-1]) if (len(data[coin]["open"]) > 0 and len(data[coin]["close"]) > 0) else open_price
                 heikin_close = 0.25 * (open_price + high_price + low_price + close_price)
-                data[coin]["open"].append(heikin_open)
-                data[coin]["close"].append(heikin_close)
-                data[coin]["rate"].append(rate)
+                update_data(coin, heikin_open, heikin_close, rate)
                 await on_candle_close(coin)
     except Exception as ex:
         print(ex)
 
-async def update_data(coin, new_open, new_close, new_rate):
+def update_data(coin, new_open, new_close, new_rate):
+    global data
+
     data[coin]["open"].append(new_open)
     data[coin]["close"].append(new_close)
     data[coin]["rate"].append(new_rate)
