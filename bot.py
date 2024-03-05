@@ -15,71 +15,85 @@ import discord
 
 coins = [
     "ADA",
-    "STORJ",
-    "BAT",
-    "VET",
-    "ONE",
     "UNI",
-    "ZEN",
-    "QTUM",
+    "XRP",
     "SOL",
-    "BAND",
-    "NEO",
-    "XLM",
-    "ATOM",
-    "ZRX",
-    "KNC",
-    "HNT",
+    "SHIB",
+    "DOGE",
     "MATIC",
     "LINK",
+    "FTM",
     "MANA",
-    "ENJ",
-    "IOTA",
-    "ZIL",
-    "HBAR",
-    "RVN",
+    "XNO",
+    "AVAX",
+    "SAND",
+    "SUI",
+    "ONE",
+    "FIL",
+    "CELO",
+    "FET",
+    "OCEAN",
+    "GALA",
+    "GRT",
+    "NEAR",
+    "ICX",
+    "AUDIO",
+    "ACH",
     "WAVES",
-    "OMG",
-    "XTZ",
+    "LPT",
+    "COTI",
+    "KAVA",
+    "RNDR",
+    "HBAR",
+    "DOT",
+    "VET",
+    "ICP",
     "ALGO",
-    "DOGE"
+    "ROSE",
+    "NEO"
 ]
 
-precisions = {
-    "ADA": 10.0,
-    "STORJ": 100.0,
-    "BAT": 100.0,
-    "VET": 1.0,
-    "ONE": 10.0,
-    "ONT": 100.0,
-    "UNI": 100.0,
-    "DOGE": 1.0,
-    "ZEN": 1000.0,
-    "QTUM": 1000.0,
+precisions = {      # example quantity
+    "ADA": 10.0,    # i.e. 1.2
+    "UNI": 100.0,   # i.e. 1.23
+    "XRP": 1.0,     # i.e. 1
     "SOL": 100.0,
-    "BAND": 100.0,
-    "NEO": 1000.0,
-    "XLM": 10.0,
-    "ATOM": 1000.0,
-    "ZRX": 100.0,
-    "KNC": 1000.0,
-    "HNT": 100.0,
+    "DOGE": 1.0,
+    "CELO": 10.0,
+    "FET": 1.0,
+    "OCEAN": 1.0,
+    "MANA": 1.0,
+    "XNO": 1.0,
+    "AVAX": 100.0,
+    "SAND": 1.0,
+    "SUI": 10.0,
+    "ONE": 10.0,
+    "FIL": 100.0,
+    "GALA": 1.0,
+    "GRT": 1.0,
+    "NEAR": 10.0,
+    "ICX": 10.0,
+    "AUDIO": 10.0,
+    "ACH": 1.0,
+    "WAVES": 100.0,
+    "LPT": 100.0,
+    "COTI": 1.0,
+    "KAVA": 10.0,
+    "SHIB": 1.0,
+    "RNDR": 100.0,
     "MATIC": 10.0,
     "LINK": 100.0,
-    "MANA": 100.0,
-    "ENJ": 10.0,
-    "IOTA": 100.0,
-    "ZIL": 10.0,
-    "HBAR": 10.0,
-    "RVN": 10.0,
-    "WAVES": 100.0,
-    "OMG": 100.0,
-    "XTZ": 100.0,
-    "ALGO": 1000.0,
-    "OXT": 100.0
+    "HBAR": 1.0,
+    "FTM": 1.0,
+    "DOT": 100.0,
+    "VET": 100.0,
+    "ICP": 100.0,
+    "ALGO": 1.0,
+    "ROSE": 10.0,
+    "NEO": 100.0
 }
 
-base_asset = "USD"
+base_asset = "USDT"
 
 holdings = {}
 
@@ -88,7 +102,7 @@ MIN_HOLD_TIME = 5 # minimum time to hold a trade in minutes (not including stop 
 streams = map(lambda s: s.lower() + "usdt@kline_1m", coins)
 endpoint = "/".join(streams)
 
-SOCKET = "wss://stream.binance.com:9443/ws/" + endpoint
+SOCKET = "wss://data-stream.binance.com:9443/ws/" + endpoint
 
 data = { c : {
     "price": 0.0,
@@ -104,8 +118,11 @@ data = { c : {
 last_msg = "none yet"
 channel = -1 # should start with a default channel but I'm lazy
 
+intents = discord.Intents.default()
+intents.message_content = True
+
 binance_client = Client(config.API_KEY, config.API_SECRET, tld='us')
-discord_client = discord.Client()
+discord_client = discord.Client(intents=intents)
 
 #########################################################################################################
 # Signals
@@ -328,7 +345,7 @@ async def cancel_tail_order(coin):
 #########################################################################################################
 async def status():
     embed = discord.Embed(title="Latest coin statuses:")
-    for coin in coins:
+    for coin in coins[:24]:
         last_2_rates = data[coin]["rate"][-2:]
         s = sum(last_2_rates)
         status = "{} rate over last 2m is {}%".format(coin, round(s*100, 3))
@@ -363,7 +380,7 @@ async def on_candle_close(coin):
     if coin in holdings:
         buy_time = holdings[coin]['buy_time']
         cur_time = datetime.datetime.now()
-        newly_bought = cur_time < buy_time + timedelta(minutes = MIN_HOLD_TIME):
+        newly_bought = cur_time < buy_time + timedelta(minutes = MIN_HOLD_TIME)
         sell = False if (len(sell_criteria) <= 0 or newly_bought) else True
         for criteria in sell_criteria:
             signal = criteria[0].__name__
@@ -375,7 +392,7 @@ async def on_candle_close(coin):
 
 async def output_prices():
     embed = discord.Embed(title="Latest coin prices:")
-    for coin in coins:
+    for coin in coins[:24]:
         price = round(data[coin]["price"], 3)
         embed.add_field(name=coin, value=price)
     await discord_embed(embed)
@@ -518,6 +535,7 @@ async def listener():
     global data, last_msg
     try:
         async for message in websocket:
+            #print(message)
             last_msg = message
             json_message = json.loads(message)
             candle = json_message['k']
