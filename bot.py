@@ -18,7 +18,7 @@ coins = [
     "UNI",
     "XRP",
     "SOL",
-    "SHIB",
+    # "SHIB",
     "DOGE",
     "MATIC",
     "LINK",
@@ -272,7 +272,8 @@ async def market_buy(coin):
                 print(tail_order)
             holding = { 
                 "buy_price": buy_price,
-                "buy_time": datetime.datetime.now()
+                "buy_time": datetime.datetime.now(),
+                "tail_price": tail_price
             }
             holdings[coin] = holding
             await shout(":red_circle: Purchased {} at {} with sell tail at {}".format(coin, buy_price, tail_price))
@@ -286,15 +287,22 @@ async def market_buy(coin):
 
 # checks and updates holding state
 async def refresh_holdings(coin):
+    global max_surge
     try:
         if coin in holdings:
             response = binance_client.get_asset_balance(asset=coin)
             print("balance: {}".format(response))
             qty = float(response['free']) + float(response['locked'])
-            if qty <= 1.0:
-                # coin has less than 1.0 units, it's safe to assume this coin has been sold or is not being held
+            if qty <= 2.0:
+                # coin has less than 2.0 units, it's safe to assume this coin has been sold or is not being primarily held
                 # todo: make a dedicated more precise way of ensuring this holdings list is always in sync with reality
-                holdings.pop(coin, None)
+                h = holdings.pop(coin, None)
+                buy_price = h['buy_price']
+                tail_price = h['buy_price']
+                gainrate = (tail_price/buy_price) - 1.0
+                await shout(":green_circle: Stop loss triggered for {} at {} for {}%".format(coin, tail_price, round(gainrate*100, 3)))
+                if (config.MODE == "FOMO"):
+                    max_surge = ("Nothing", 0) # reset max surge FOMO, since we're holding nothing now
     except Exception as e:
         await shout("an exception occured - {}".format(e))
         traceback.print_exc()
@@ -327,6 +335,7 @@ async def update_tail_order(coin):
                     price=lim_price,
                     stopPrice=tail_price)
                 print(tail_order)
+                holdings[coin]['tail_price'] = tail_price
                 await shout(":arrow_double_up: Updated {} tail from {} to {}".format(coin, stop_price, tail_price))
     except Exception as e:
         await shout("an exception occured - {}".format(e))
@@ -501,10 +510,11 @@ https://tenor.com/view/lobster-muscles-angry-spongebob-gif-11346320""")
                             for coin in holdings:
                                 buy_price = holdings[coin]['buy_price']
                                 cur_price = data[coin]["price"]
+                                tail_price = holdings[coin]['tail_price']
                                 buy_time = holdings[coin]['buy_time']
                                 cur_time = datetime.datetime.now()
                                 time_delta = (cur_time - buy_time).seconds/60
-                                embed.add_field(name=coin, value="Purchased {} minutes ago for {} (current price: {})".format(int(time_delta), buy_price, cur_price))
+                                embed.add_field(name=coin, value="Purchased {} minutes ago for {} (current price: {}, sell tail: {})".format(int(time_delta), buy_price, cur_price, tail_price))
                             await discord_embed(embed)
                         else:
                             await discord_message("Nothing at the moment.")
