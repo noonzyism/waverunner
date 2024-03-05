@@ -97,8 +97,6 @@ base_asset = "USDT"
 
 holdings = {}
 
-MIN_HOLD_TIME = 5 # minimum time to hold a trade in minutes (not including stop loss sells)
-
 streams = map(lambda s: s.lower() + "usdt@kline_1m", coins)
 endpoint = "/".join(streams)
 
@@ -170,6 +168,7 @@ sell_criteria = [
 ]
 
 timeSince = { c : { s.__name__ : 9999 for s in signals } for c in coins }
+max_surge = ("Nothing", 0)
 
 #########################################################################################################
 # Helpers
@@ -205,7 +204,7 @@ async def shout(msg):
 #########################################################################################################
 # Binance Interaction
 #########################################################################################################
-# gets the current USD balance
+# gets the current balance for the coin/asset
 def balance(coin):
     response = binance_client.get_asset_balance(asset=coin)
     print("Balance: {}".format(response))
@@ -240,8 +239,15 @@ async def dump(coin):
 
 # buys as much as possible of the given asset
 async def market_buy(coin):
-    bal = balance(base_asset)
     try:
+        if (config.MODE == "FOMO"): # FOMO mode will attempt to buy no matter what, dumping what it's currently holding
+            for c in holdings.copy():
+                buy_time = holdings[c]['buy_time']
+                cur_time = datetime.datetime.now()
+                newly_bought = cur_time < buy_time + timedelta(minutes = config.MIN_HOLD_TIME)
+                if (c != coin and newly_bought != True):
+                    await dump(c)
+        bal = balance(base_asset)
         if (bal > 50.0):
             curr_price = data[coin]["price"]
             qty = xf(coin, bal/curr_price * 0.99) # the .99 is to discount a bit in case the price has already gone beyond this
@@ -250,19 +256,20 @@ async def market_buy(coin):
             order = binance_client.order_market_buy(symbol=pair, quantity=qty)
             print(order)
             buy_price = xprice(order)
-            qty = xf(coin, xyield(order))
-            tail_price = xs(buy_price*0.987)
-            limit_price = xs(curr_price*0.95) # discounted from the trigger price to prevent holding a falling knife
-            print("Attempting to place tail with qty={}, trigger={}, limit={}".format(qty, tail_price, buy_price))
-            tail_order = binance_client.create_order(
-                symbol=pair, 
-                side='SELL', 
-                type='STOP_LOSS_LIMIT', 
-                timeInForce='GTC',
-                quantity=qty, 
-                price=limit_price,
-                stopPrice=tail_price)
-            print(tail_order)
+            if (config.STOP_LOSS_TAIL):
+                qty = xf(coin, xyield(order))
+                tail_price = xs(buy_price*config.TAIL_COEFFICIENT)
+                limit_price = xs(curr_price*(config.TAIL_COEFFICIENT - 0.02)) # discounted from the trigger price to prevent holding a falling knife
+                print("Attempting to place tail with qty={}, trigger={}, limit={}".format(qty, tail_price, buy_price))
+                tail_order = binance_client.create_order(
+                    symbol=pair, 
+                    side='SELL', 
+                    type='STOP_LOSS_LIMIT', 
+                    timeInForce='GTC',
+                    quantity=qty, 
+                    price=limit_price,
+                    stopPrice=tail_price)
+                print(tail_order)
             holding = { 
                 "buy_price": buy_price,
                 "buy_time": datetime.datetime.now()
@@ -278,20 +285,21 @@ async def market_buy(coin):
     return True
 
 # checks and updates holding state
-async def check_if_still_holding(coin):
+async def refresh_holdings(coin):
     try:
         if coin in holdings:
-            pair = coin + base_asset
-            orders = binance_client.get_open_orders(symbol=pair)
-            if len(orders) <= 0:
-                # coin has no tail orders, it's safe to assume this coin has been sold or is not being held
+            response = binance_client.get_asset_balance(asset=coin)
+            print("balance: {}".format(response))
+            qty = float(response['free']) + float(response['locked'])
+            if qty <= 1.0:
+                # coin has less than 1.0 units, it's safe to assume this coin has been sold or is not being held
                 # todo: make a dedicated more precise way of ensuring this holdings list is always in sync with reality
                 holdings.pop(coin, None)
     except Exception as e:
         await shout("an exception occured - {}".format(e))
         traceback.print_exc()
 
-# updates (if necessary) the stop-limit-sell order of the given pair to trail 2% behind the current price
+# updates (if necessary) the stop-limit-sell order of the given pair to continue trailing behind the current price
 # assumption: there is at most one stop-limit order for any given pair
 async def update_tail_order(coin):
     try:
@@ -300,14 +308,15 @@ async def update_tail_order(coin):
         if len(orders) > 0:
             curr_price = data[coin]["price"]
             stop_price = float(orders[0]['stopPrice'])
-            if (curr_price*0.97 > stop_price): # stop_price is more than 3% away from the current price, raise it
+            if (curr_price*(config.TAIL_COEFFICIENT - 0.01) > stop_price): # the - 0.01 is to ensure we're not constantly updating the stop loss for any slight rise
+                # stop_price is further than the target coefficient away from the current price, raise it
                 print("Attempting to update tail order for {}".format(coin))
                 # cancel previous
                 order_id = orders[0]['orderId']
                 binance_client.cancel_order(symbol=pair, orderId=order_id)
                 # create new
-                tail_price = xs(curr_price*0.98)
-                lim_price = xs(curr_price*0.94)
+                tail_price = xs(curr_price*config.TAIL_COEFFICIENT)
+                lim_price = xs(curr_price*(config.TAIL_COEFFICIENT - 0.02))
                 qty = xf(coin, float(orders[0]['origQty']) - float(orders[0]['executedQty']))
                 tail_order = binance_client.create_order(
                     symbol=pair, 
@@ -319,10 +328,6 @@ async def update_tail_order(coin):
                     stopPrice=tail_price)
                 print(tail_order)
                 await shout(":arrow_double_up: Updated {} tail from {} to {}".format(coin, stop_price, tail_price))
-        else:
-            # coin has no tail orders, it's safe to assume this coin has been sold or is not being held
-            # todo: make a dedicated more precise way of ensuring this holdings list is always in sync with reality
-            holdings.pop(coin, None)
     except Exception as e:
         await shout("an exception occured - {}".format(e))
         traceback.print_exc()
@@ -343,19 +348,61 @@ async def cancel_tail_order(coin):
 #########################################################################################################
 # Alerting/Status Check
 #########################################################################################################
+def should_i_buy(coin):
+    global data, timeSince, max_surge, buy_criteria, sell_criteria
+    buy = False
+    if (config.MODE == "FOMO"):
+        if (surge(data[coin])):
+            last_2_rates = data[coin]["rate"][-2:]
+            s = sum(last_2_rates)
+            if (s > max_surge[1]):
+                max_surge = (coin, s)
+                return True
+            else:
+                return False
+    else: # SIGNALS / default mode
+        buy = False if len(buy_criteria) <= 0 else True
+        for criteria in buy_criteria:
+            signal = criteria[0].__name__
+            since = criteria[1]
+            buy = buy and (timeSince[coin][signal] <= since)
+    return buy
+
+def should_i_sell(coin):
+    global data, timeSince, buy_criteria, sell_criteria
+    sell = False
+    if (config.MODE == "FOMO"):
+        return False
+    else: # SIGNALS / default mode
+        sell = False if (len(sell_criteria) <= 0) else True
+        for criteria in sell_criteria:
+            signal = criteria[0].__name__
+            since = criteria[1]
+            sell = sell and (timeSince[coin][signal] <= since)
+    return sell
+
 async def status():
     embed = discord.Embed(title="Latest coin statuses:")
-    for coin in coins[:24]:
-        last_2_rates = data[coin]["rate"][-2:]
-        s = sum(last_2_rates)
-        status = "{} rate over last 2m is {}%".format(coin, round(s*100, 3))
+    coin_rates = []
+    for coin in coins:
+        if "rate" in data[coin] and len(data[coin]["rate"]) >= 2: 
+            last_2_rates = data[coin]["rate"][-2:]
+            s = sum(last_2_rates)
+            coin_rates.append((coin, s))
+
+    sorted_coins = sorted(coin_rates, key=lambda x: x[1], reverse=True)
+
+    for coin, rate_sum in sorted_coins[:24]:
+        status = "{} rate over last 2m is {}%".format(coin, round(rate_sum*100, 3))
         print(status)
         embed.add_field(name=coin, value=status)
     await discord_embed(embed)
 
 async def on_candle_close(coin):
-    global data, timeSince, buy_criteria, sell_criteria, MIN_HOLD_TIME
-    await check_if_still_holding(coin)
+    global data, timeSince, buy_criteria, sell_criteria
+    await refresh_holdings(coin)
+
+    # check for signals
     for signal in signals:
         if (signal(data[coin])):
             #await discord_message("'{}' signal detected for {}.".format(signal.__name__, coin))
@@ -368,27 +415,22 @@ async def on_candle_close(coin):
         else:
             timeSince[coin][signal.__name__] += 1
 
-    buy = False if len(buy_criteria) <= 0 else True
-    for criteria in buy_criteria:
-        signal = criteria[0].__name__
-        since = criteria[1]
-        buy = buy and (timeSince[coin][signal] <= since)
-    if (buy):
-        #await discord_message("Buy criteria met for {}".format(coin))
+    # check for buy
+    if (should_i_buy(coin)):
+        print("Buy criteria met for {}".format(coin))
         await market_buy(coin)
 
+    # check for sell
     if coin in holdings:
         buy_time = holdings[coin]['buy_time']
         cur_time = datetime.datetime.now()
-        newly_bought = cur_time < buy_time + timedelta(minutes = MIN_HOLD_TIME)
-        sell = False if (len(sell_criteria) <= 0 or newly_bought) else True
-        for criteria in sell_criteria:
-            signal = criteria[0].__name__
-            since = criteria[1]
-            sell = sell and (timeSince[coin][signal] <= since)
-        if (sell):
-            #await discord_message("Buy criteria met for {}".format(coin))
-            await dump(coin)
+        newly_bought = cur_time < buy_time + timedelta(minutes = config.MIN_HOLD_TIME)
+        if (newly_bought == False and should_i_sell(coin)):
+                #await discord_message("Buy criteria met for {}".format(coin))
+                await dump(coin)
+                return
+        if (config.STOP_LOSS_TAIL):
+            await update_tail_order(coin)
 
 async def output_prices():
     embed = discord.Embed(title="Latest coin prices:")
@@ -430,7 +472,7 @@ async def on_message(message):
             if message.content[0] == "!":
                 command = message.content[1:]
                 try:
-                    global channel, last_msg
+                    global channel, last_msg, max_surge
                     channel = message.channel
                     if command == "kill":
                         if (message.author.id == config.OWNER_USERID):
@@ -449,6 +491,9 @@ async def on_message(message):
                     elif command == "gethype":
                         await discord_message("""**BIG GAINS ONLY** 
 https://tenor.com/view/lobster-muscles-angry-spongebob-gif-11346320""")
+                        
+                    elif command == "peak surge":
+                        await discord_message("The highest surge detected was {} with {}%".format(max_surge[0], round(max_surge[1]*100, 3)))
 
                     elif command == "holding":
                         if (len(holdings) > 0):
@@ -512,12 +557,17 @@ https://tenor.com/view/lobster-muscles-angry-spongebob-gif-11346320""")
                         else:
                             await discord_message("Sorry bud, I don't know you like that.")
 
+                    elif command.startswith("reset fomo"):
+                        if (message.author.id == config.OWNER_USERID):
+                            max_surge = ("Nothing", 0)
+                            await discord_message("FOMO reset.")
+                        else:
+                            await discord_message("Sorry bud, I don't know you like that.")
+
                     elif command.startswith("last"):
                         second_arg = command.replace('last','').strip()
                         if (second_arg == ''):
                             await channel.send("Last message was: {}".format(last_msg))
-                        elif (second_arg in messages):
-                            await channel.send("Last message for {} was: {}".format(second_arg, messages[second_arg]))
                         else:
                             await channel.send("Come again?")
                 except Exception as ex:
