@@ -298,7 +298,7 @@ async def refresh_holdings(coin):
                 # todo: make a dedicated more precise way of ensuring this holdings list is always in sync with reality
                 h = holdings.pop(coin, None)
                 buy_price = h['buy_price']
-                tail_price = h['buy_price']
+                tail_price = h['tail_price']
                 gainrate = (tail_price/buy_price) - 1.0
                 await shout(":green_circle: Stop loss triggered for {} at {} for {}%".format(coin, tail_price, round(gainrate*100, 3)))
                 if (config.MODE == "FOMO"):
@@ -378,8 +378,13 @@ def should_i_buy(coin):
     return buy
 
 def should_i_sell(coin):
-    global data, timeSince, buy_criteria, sell_criteria
+    global data, holdings, timeSince, buy_criteria, sell_criteria
     sell = False
+    if (config.TAKE_PROFIT):
+        cur_price = data[coin]["price"]
+        buy_price = holdings[coin]['buy_price']
+        if (cur_price/buy_price >= config.TAKE_PROFIT_MARGIN):
+            return True
     if (config.MODE == "FOMO"):
         return False
     else: # SIGNALS / default mode
@@ -571,6 +576,17 @@ https://tenor.com/view/lobster-muscles-angry-spongebob-gif-11346320""")
                         if (message.author.id == config.OWNER_USERID):
                             max_surge = ("Nothing", 0)
                             await discord_message("FOMO reset.")
+                        else:
+                            await discord_message("Sorry bud, I don't know you like that.")
+
+                    elif command.startswith("mode"):
+                        if (message.author.id == config.OWNER_USERID):
+                            second_arg = command.replace('update','').strip()
+                            if (second_arg == ''):
+                                await channel.send("MODE is set to '{}'".format(config.MODE))
+                            else:
+                                config.MODE = second_arg
+                                await discord_message("MODE was set to '{}'".format(config.MODE))
                         else:
                             await discord_message("Sorry bud, I don't know you like that.")
 
