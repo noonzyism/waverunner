@@ -288,7 +288,7 @@ async def market_buy(coin):
 # checks and updates holding state
 async def refresh_holdings(coin):
     global max_surge
-    try:
+    try:            
         if coin in holdings:
             response = binance_client.get_asset_balance(asset=coin)
             print("balance: {}".format(response))
@@ -301,8 +301,6 @@ async def refresh_holdings(coin):
                 tail_price = h['tail_price']
                 gainrate = (tail_price/buy_price) - 1.0
                 await shout(":green_circle: Stop loss triggered for {} at {} for {}%".format(coin, tail_price, round(gainrate*100, 3)))
-                if (config.MODE == "FOMO"):
-                    max_surge = ("Nothing", 0) # reset max surge FOMO, since we're holding nothing now
     except Exception as e:
         await shout("an exception occured - {}".format(e))
         traceback.print_exc()
@@ -384,6 +382,7 @@ def should_i_sell(coin):
         cur_price = data[coin]["price"]
         buy_price = holdings[coin]['buy_price']
         if (cur_price/buy_price >= config.TAKE_PROFIT_MARGIN):
+            print("Taking profit in {}".format(coin))
             return True
     if (config.MODE == "FOMO"):
         return False
@@ -415,6 +414,9 @@ async def status():
 async def on_candle_close(coin):
     global data, timeSince, buy_criteria, sell_criteria
     await refresh_holdings(coin)
+
+    if (config.MODE == "FOMO" and len(holdings) <= 0):
+        max_surge = ("Nothing", 0) # reset max surge FOMO, since we're holding nothing now
 
     # check for signals
     for signal in signals:
@@ -581,7 +583,7 @@ https://tenor.com/view/lobster-muscles-angry-spongebob-gif-11346320""")
 
                     elif command.startswith("mode"):
                         if (message.author.id == config.OWNER_USERID):
-                            second_arg = command.replace('update','').strip()
+                            second_arg = command.replace('mode','').strip()
                             if (second_arg == ''):
                                 await channel.send("MODE is set to '{}'".format(config.MODE))
                             else:
