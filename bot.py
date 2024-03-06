@@ -110,7 +110,13 @@ data = { c : {
     "rsi-2": [],
     "rsi-4": [],
     "rsi-14": [],
-    "rsi-30": []
+    "rsi-30": [],
+    # an entry must be added for every signal defined below
+    # signal arrays stores 1s and 0s - 1 indicates a signal triggered, else 0
+    "surge": [],
+    "crash": [],
+    "rsi4_crossover": [],
+    "rsi4_crossunder": []
 } for c in coins }
 
 last_msg = "none yet"
@@ -159,12 +165,16 @@ signals = [
 ]
 
 buy_criteria = [
-    (surge, 0),
-    (rsi4_crossover, 3)
+    # (signal, T, N)
+    # if the signal triggered N times in the last T minutes
+    (surge, 0, 1),
+    (rsi4_crossover, 3, 1)
 ]
 
 sell_criteria = [
-    (rsi4_crossunder, 0)
+    # (signal, T, N)
+    # if the signal triggered N times in the last T minutes
+    (rsi4_crossunder, 0, 1)
 ]
 
 timeSince = { c : { s.__name__ : 9999 for s in signals } for c in coins }
@@ -356,7 +366,7 @@ async def cancel_tail_order(coin):
 # Alerting/Status Check
 #########################################################################################################
 def should_i_buy(coin):
-    global data, timeSince, max_surge, buy_criteria, sell_criteria
+    global data, timeSince, max_surge, buy_criteria
     buy = False
     if (config.MODE == "FOMO"):
         if (surge(data[coin])):
@@ -372,11 +382,12 @@ def should_i_buy(coin):
         for criteria in buy_criteria:
             signal = criteria[0].__name__
             since = criteria[1]
-            buy = buy and (timeSince[coin][signal] <= since)
+            count = criteria[2]
+            buy = buy and (sum(data[coin][signal][-since:]) >= count)
     return buy
 
 def should_i_sell(coin):
-    global data, holdings, timeSince, buy_criteria, sell_criteria
+    global data, holdings, timeSince, sell_criteria
     sell = False
     if (config.TAKE_PROFIT):
         cur_price = data[coin]["price"]
@@ -391,7 +402,8 @@ def should_i_sell(coin):
         for criteria in sell_criteria:
             signal = criteria[0].__name__
             since = criteria[1]
-            sell = sell and (timeSince[coin][signal] <= since)
+            count = criteria[2]
+            sell = sell and (sum(data[coin][signal][-since:]) >= count)
     return sell
 
 async def status():
@@ -412,7 +424,7 @@ async def status():
     await discord_embed(embed)
 
 async def on_candle_close(coin):
-    global data, timeSince, buy_criteria, sell_criteria
+    global data, timeSince, max_surge
     await refresh_holdings(coin)
 
     if (config.MODE == "FOMO" and len(holdings) <= 0):
@@ -423,6 +435,7 @@ async def on_candle_close(coin):
         if (signal(data[coin])):
             #await discord_message("'{}' signal detected for {}.".format(signal.__name__, coin))
             timeSince[coin][signal.__name__] = 0
+            data[coin][signal.__name__].append(1)
             if (signal.__name__ == "surge"):
                 last_2_rates = data[coin]["rate"][-2:]
                 s = sum(last_2_rates)
@@ -430,6 +443,7 @@ async def on_candle_close(coin):
                 await discord_message(alert)
         else:
             timeSince[coin][signal.__name__] += 1
+            data[coin][signal.__name__].append(0)
 
     # check for buy
     if (should_i_buy(coin)):
@@ -521,7 +535,7 @@ https://tenor.com/view/lobster-muscles-angry-spongebob-gif-11346320""")
                                 buy_time = holdings[coin]['buy_time']
                                 cur_time = datetime.datetime.now()
                                 time_delta = (cur_time - buy_time).seconds/60
-                                embed.add_field(name=coin, value="Purchased {} minutes ago for {} (current price: {}, sell tail: {})".format(int(time_delta), buy_price, cur_price, tail_price))
+                                embed.add_field(name=coin, value="Purchased {} minutes ago for {} (current price: {}, stop loss: {})".format(int(time_delta), buy_price, cur_price, tail_price))
                             await discord_embed(embed)
                         else:
                             await discord_message("Nothing at the moment.")
