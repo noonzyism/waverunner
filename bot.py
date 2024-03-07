@@ -258,7 +258,7 @@ async def market_buy(coin):
                 if (c != coin and newly_bought != True):
                     await dump(c)
         bal = balance(base_asset)
-        if (bal > 50.0):
+        if (bal > config.MIN_BALANCE_THRESHOLD):
             curr_price = data[coin]["price"]
             qty = xf(coin, bal/curr_price * 0.99) # the .99 is to discount a bit in case the price has already gone beyond this
             print("Attempting market buy of {} units of {}".format(qty, coin))
@@ -283,7 +283,7 @@ async def market_buy(coin):
             holding = { 
                 "buy_price": buy_price,
                 "buy_time": datetime.datetime.now(),
-                "tail_price": tail_price
+                "tail_price": buy_price*config.TAIL_COEFFICIENT
             }
             holdings[coin] = holding
             await shout(":red_circle: Purchased {} at {} with sell tail at {}".format(coin, buy_price, tail_price))
@@ -307,10 +307,10 @@ async def refresh_holdings(coin):
                 # coin has less than 2.0 units, it's safe to assume this coin has been sold or is not being primarily held
                 # todo: make a dedicated more precise way of ensuring this holdings list is always in sync with reality
                 h = holdings.pop(coin, None)
-                buy_price = h['buy_price']
-                tail_price = h['tail_price']
-                gainrate = (tail_price/buy_price) - 1.0
-                await shout(":green_circle: Stop loss triggered for {} at {} for {}%".format(coin, tail_price, round(gainrate*100, 3)))
+                # buy_price = h['buy_price']
+                # tail_price = h['tail_price']
+                # gainrate = (float(tail_price)/float(buy_price)) - 1.0
+                await shout(":green_circle: Stop loss triggered for {}".format(coin))
     except Exception as e:
         await shout("an exception occured - {}".format(e))
         traceback.print_exc()
