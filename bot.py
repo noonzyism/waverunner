@@ -97,7 +97,7 @@ base_asset = "USDT"
 
 holdings = {}
 
-streams = map(lambda s: s.lower() + "usdt@kline_1m", coins)
+streams = map(lambda s: s.lower() + "usdt@kline_" + config.CANDLE_TIMEFRAME, coins)
 endpoint = "/".join(streams)
 
 SOCKET = "wss://data-stream.binance.com:9443/ws/" + endpoint
@@ -106,6 +106,7 @@ data = { c : {
     "price": 0.0,
     "open": [],
     "close": [],
+    "delta": [],
     "rate": [],
     "rsi-2": [],
     "rsi-4": [],
@@ -115,8 +116,11 @@ data = { c : {
     # signal arrays stores 1s and 0s - 1 indicates a signal triggered, else 0
     "surge": [],
     "crash": [],
+    "reversal": [],
     "rsi4_crossover": [],
-    "rsi4_crossunder": []
+    "rsi4_crossunder": [],
+    "rsi4_xunder_rsi14": [],
+    "euphoria": []
 } for c in coins }
 
 last_msg = "none yet"
@@ -141,6 +145,17 @@ def crash(context):
     s = sum(last_2_rates)
     return (s < -0.03)
 
+def reversal(context):
+    if (len(context["delta"]) < 5):
+        return False
+    
+    last_candle_green = context["delta"][-1] > 0
+    prior_2_candles_red = context["delta"][-2] < 0 and context["delta"][-3] < 0
+    last_candle_shrink = abs(context["delta"][-2]) > (abs(context["delta"][-1]) * 2)
+    prior_candle_escalation = abs(context["delta"][-2]) > abs(context["delta"][-3]) + abs(context["delta"][-4]) + abs(context["delta"][-5])
+    last_candle_significance = abs(context["delta"][-1]) / abs(context["close"][-1]) > 0.012
+    return (last_candle_green and prior_2_candles_red and last_candle_shrink and prior_candle_escalation and last_candle_significance)
+
 def rsi4_crossover(context):
     mrsi = talib.SMA(numpy.array(context["rsi-4"]), 30) if len(context["rsi-4"]) > 1 else [50.0]
     curr_rsi4 = context["rsi-4"][-1] if len(context["rsi-4"]) > 0 else 50.0
@@ -157,24 +172,41 @@ def rsi4_crossunder(context):
     prev_ma30_rsi4 = mrsi[-2] if len(mrsi) > 1 else 50.0
     return (prev_rsi4 > prev_ma30_rsi4) and (curr_rsi4 < curr_ma30_rsi4) # detects a shift in momentum
 
+def rsi4_xunder_rsi14(context):
+    curr_rsi4 = context["rsi-4"][-1] if len(context["rsi-4"]) > 0 else 50.0
+    prev_rsi4 = context["rsi-4"][-2] if len(context["rsi-4"]) > 1 else 50.0
+    curr_rsi14 = context["rsi-14"][-1] if len(context["rsi-14"]) > 0 else 50.0
+    prev_rsi14 = context["rsi-14"][-2] if len(context["rsi-14"]) > 1 else 50.0
+    return (curr_rsi4 < curr_rsi14) and (prev_rsi4 > prev_rsi14)
+
+def euphoria(context):
+    if (len(context["rsi-14"]) <= 0):
+        return False
+    return context["rsi-14"][-1] > 70
+
 signals = [
     surge,
     crash,
+    reversal,
     rsi4_crossover,
-    rsi4_crossunder
+    rsi4_crossunder,
+    rsi4_xunder_rsi14,
+    euphoria
 ]
 
 buy_criteria = [
     # (signal, T, N)
     # if the signal triggered N times in the last T minutes
-    (surge, 0, 1),
-    (rsi4_crossover, 3, 1)
+    # (surge, 0, 1),
+    # (rsi4_crossover, 3, 1)
+    (reversal, 0, 1)
 ]
 
 sell_criteria = [
     # (signal, T, N)
     # if the signal triggered N times in the last T minutes
-    (rsi4_crossunder, 0, 1)
+    (rsi4_xunder_rsi14, 0, 1),
+    (euphoria, 0, 1)
 ]
 
 timeSince = { c : { s.__name__ : 9999 for s in signals } for c in coins }
@@ -266,10 +298,10 @@ async def market_buy(coin):
             order = binance_client.order_market_buy(symbol=pair, quantity=qty)
             print(order)
             buy_price = xprice(order)
-            if (config.STOP_LOSS_TAIL):
+            if (config.STOP_LOSS):
                 qty = xf(coin, xyield(order))
-                tail_price = xs(buy_price*config.TAIL_COEFFICIENT)
-                limit_price = xs(curr_price*(config.TAIL_COEFFICIENT - 0.02)) # discounted from the trigger price to prevent holding a falling knife
+                tail_price = xs(buy_price*config.STOP_LOSS_COEFFICIENT)
+                limit_price = xs(curr_price*(config.STOP_LOSS_COEFFICIENT - 0.02)) # discounted from the trigger price to prevent holding a falling knife
                 print("Attempting to place tail with qty={}, trigger={}, limit={}".format(qty, tail_price, buy_price))
                 tail_order = binance_client.create_order(
                     symbol=pair, 
@@ -283,7 +315,7 @@ async def market_buy(coin):
             holding = { 
                 "buy_price": buy_price,
                 "buy_time": datetime.datetime.now(),
-                "tail_price": buy_price*config.TAIL_COEFFICIENT
+                "tail_price": buy_price*config.STOP_LOSS_COEFFICIENT
             }
             holdings[coin] = holding
             await shout(":red_circle: Purchased {} at {} with sell tail at {}".format(coin, buy_price, tail_price))
@@ -324,15 +356,15 @@ async def update_tail_order(coin):
         if len(orders) > 0:
             curr_price = data[coin]["price"]
             stop_price = float(orders[0]['stopPrice'])
-            if (curr_price*(config.TAIL_COEFFICIENT - 0.01) > stop_price): # the - 0.01 is to ensure we're not constantly updating the stop loss for any slight rise
+            if (curr_price*(config.STOP_LOSS_COEFFICIENT - 0.01) > stop_price): # the - 0.01 is to ensure we're not constantly updating the stop loss for any slight rise
                 # stop_price is further than the target coefficient away from the current price, raise it
                 print("Attempting to update tail order for {}".format(coin))
                 # cancel previous
                 order_id = orders[0]['orderId']
                 binance_client.cancel_order(symbol=pair, orderId=order_id)
                 # create new
-                tail_price = xs(curr_price*config.TAIL_COEFFICIENT)
-                lim_price = xs(curr_price*(config.TAIL_COEFFICIENT - 0.02))
+                tail_price = xs(curr_price*config.STOP_LOSS_COEFFICIENT)
+                lim_price = xs(curr_price*(config.STOP_LOSS_COEFFICIENT - 0.02))
                 qty = xf(coin, float(orders[0]['origQty']) - float(orders[0]['executedQty']))
                 tail_order = binance_client.create_order(
                     symbol=pair, 
@@ -418,7 +450,7 @@ async def status():
     sorted_coins = sorted(coin_rates, key=lambda x: x[1], reverse=True)
 
     for coin, rate_sum in sorted_coins[:24]:
-        status = "{} rate over last 2m is {}%".format(coin, round(rate_sum*100, 3))
+        status = "{} rate over last 2 candles is {}%".format(coin, round(rate_sum*100, 3))
         print(status)
         embed.add_field(name=coin, value=status)
     await discord_embed(embed)
@@ -439,7 +471,7 @@ async def on_candle_close(coin):
             if (signal.__name__ == "surge"):
                 last_2_rates = data[coin]["rate"][-2:]
                 s = sum(last_2_rates)
-                alert = ":ocean: {} (${}) over last 2m is surging {}%".format(coin, round(data[coin]["close"][-1], 3), round(s*100, 3))
+                alert = ":ocean: {} (${}) over last 2 candles is surging {}%".format(coin, round(data[coin]["close"][-1], 3), round(s*100, 3))
                 await discord_message(alert)
         else:
             timeSince[coin][signal.__name__] += 1
@@ -556,7 +588,7 @@ https://tenor.com/view/lobster-muscles-angry-spongebob-gif-11346320""")
                             embed = discord.Embed(title="{} Signals:".format(second_arg))
                             for signal in timeSince[second_arg]:
                                 timeAgo = timeSince[second_arg][signal]
-                                msg = "{} minutes ago".format(timeAgo) if timeAgo < 9999 else "never"
+                                msg = "{} candles ago".format(timeAgo) if timeAgo < 9999 else "never"
                                 embed.add_field(name=signal, value=msg)
                             await discord_embed(embed)
 
@@ -640,19 +672,24 @@ async def listener():
                 high_price = float(candle['h'])
                 low_price = float(candle['l'])
                 rate = (close_price/open_price) - 1.0
+                delta = close_price - open_price
                 heikin_open = 0.5 * (data[coin]["open"][-1] + data[coin]["close"][-1]) if (len(data[coin]["open"]) > 0 and len(data[coin]["close"]) > 0) else open_price
                 heikin_close = 0.25 * (open_price + high_price + low_price + close_price)
-                update_data(coin, heikin_open, heikin_close, rate)
+                if (config.CANDLE_TYPE == "HEIKIN"):
+                    update_data(coin, heikin_open, heikin_close, rate, delta)
+                else:
+                    update_data(coin, open_price, close_price, rate, delta)
                 await on_candle_close(coin)
     except Exception as ex:
         print(ex)
 
-def update_data(coin, new_open, new_close, new_rate):
+def update_data(coin, new_open, new_close, new_rate, new_delta):
     global data
 
     data[coin]["open"].append(new_open)
     data[coin]["close"].append(new_close)
     data[coin]["rate"].append(new_rate)
+    data[coin]["delta"].append(new_delta)
 
     #print("rsi2s for {}: {}".format(coin, (data[coin]["rsi-2"])))
 
