@@ -1,0 +1,9 @@
+little tweaks to make:
+-add current stop loss price to holding data
+-when a holding is popped off the stack, print to discord to notify that the asset was sold, using the stop loss price to estimate the gain/loss
+
+-maybe don't print the balance to the console on balance check (especially since now we are checking it every candle close)
+
+-maybe lower the stop loss tail so it's not triggered as often
+
+-reset max surge when a stop loss is hit? if it's not holding anything, it should want to go back to holding something as soon as possible
