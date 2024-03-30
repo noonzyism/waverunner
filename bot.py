@@ -120,7 +120,8 @@ data = { c : {
     "rsi4_crossover": [],
     "rsi4_crossunder": [],
     "rsi4_xunder_rsi14": [],
-    "euphoria": []
+    "overbought": [],
+    "oversold": []
 } for c in coins }
 
 last_msg = "none yet"
@@ -145,6 +146,7 @@ def crash(context):
     s = sum(last_2_rates)
     return (s < -0.03)
 
+# WIP - very rare signal (or broken?)
 def reversal(context):
     if (len(context["delta"]) < 5):
         return False
@@ -152,9 +154,9 @@ def reversal(context):
     last_candle_green = context["delta"][-1] > 0
     prior_2_candles_red = context["delta"][-2] < 0 and context["delta"][-3] < 0
     last_candle_shrink = abs(context["delta"][-2]) > (abs(context["delta"][-1]) * 2)
-    prior_candle_escalation = abs(context["delta"][-2]) > abs(context["delta"][-3]) + abs(context["delta"][-4]) + abs(context["delta"][-5])
-    last_candle_significance = abs(context["delta"][-1]) / abs(context["close"][-1]) > 0.012
-    return (last_candle_green and prior_2_candles_red and last_candle_shrink and prior_candle_escalation and last_candle_significance)
+    # prior_candle_escalation = abs(context["delta"][-2]) > abs(context["delta"][-3]) + abs(context["delta"][-4]) + abs(context["delta"][-5])
+    # last_candle_significance = abs(context["delta"][-1]) / abs(context["close"][-1]) > 0.012
+    return (last_candle_green and prior_2_candles_red and last_candle_shrink) #and prior_candle_escalation and last_candle_significance)
 
 def rsi4_crossover(context):
     mrsi = talib.SMA(numpy.array(context["rsi-4"]), 30) if len(context["rsi-4"]) > 1 else [50.0]
@@ -179,7 +181,12 @@ def rsi4_xunder_rsi14(context):
     prev_rsi14 = context["rsi-14"][-2] if len(context["rsi-14"]) > 1 else 50.0
     return (curr_rsi4 < curr_rsi14) and (prev_rsi4 > prev_rsi14)
 
-def euphoria(context):
+def overbought(context):
+    if (len(context["rsi-14"]) <= 0):
+        return False
+    return context["rsi-14"][-1] > 70
+
+def oversold(context):
     if (len(context["rsi-14"]) <= 0):
         return False
     return context["rsi-14"][-1] > 70
@@ -191,22 +198,24 @@ signals = [
     rsi4_crossover,
     rsi4_crossunder,
     rsi4_xunder_rsi14,
-    euphoria
+    overbought,
+    oversold
 ]
 
 buy_criteria = [
     # (signal, T, N)
-    # if the signal triggered N times in the last T minutes
+    # if the signal triggered N times in the last T candles
     # (surge, 0, 1),
     # (rsi4_crossover, 3, 1)
-    (reversal, 0, 1)
+    (reversal, 0, 1),
+    (surge, 12, 2)
 ]
 
 sell_criteria = [
     # (signal, T, N)
-    # if the signal triggered N times in the last T minutes
+    # if the signal triggered N times in the last T candles
     (rsi4_xunder_rsi14, 0, 1),
-    (euphoria, 0, 1)
+    (overbought, 0, 1)
 ]
 
 timeSince = { c : { s.__name__ : 9999 for s in signals } for c in coins }
@@ -220,9 +229,9 @@ def xf(coin, value):
     p = precisions.get(coin, 1.0)
     return int(value * p)/p
 
-# truncates the given float to 3 decimal places, returned as a string (typically used for prices)
+# truncates the given float to 2 decimal places, returned as a string (typically used for prices)
 def xs(value):
-    return "{}".format(int(value * 1000)/1000.0)
+    return "{}".format(int(value * 100)/100.0)
 
 # derives the total yield of a buy order, accounting for commission loss
 def xyield(order):
