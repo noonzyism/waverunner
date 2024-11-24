@@ -24,7 +24,7 @@ coins = [
     "LINK",
     "FTM",
     "MANA",
-    "XNO",
+    # "XNO",
     "AVAX",
     "SAND",
     "SUI",
@@ -121,7 +121,8 @@ data = { c : {
     "rsi4_crossunder": [],
     "rsi4_xunder_rsi14": [],
     "overbought": [],
-    "oversold": []
+    "oversold": [],
+    "soft_landing": []
 } for c in coins }
 
 last_msg = "none yet"
@@ -132,6 +133,51 @@ intents.message_content = True
 
 binance_client = Client(config.API_KEY, config.API_SECRET, tld='us')
 discord_client = discord.Client(intents=intents)
+
+#########################################################################################################
+# Flags & Helpers (mini untracked signals, helper functions for signals)
+#########################################################################################################
+
+# latest candle was green
+def green(context):
+    return context["delta"][-1] > 0
+
+# latest candle was red
+def red(context):
+    return context["delta"][-1] < 0
+
+# last n candles have been red, measured at the tminus index (i.e. -1 = current candle; -2 = one candle ago)
+def red_streak(context, tminus, n):
+    cond = True
+    for i in range(n):
+        cond = cond and context["delta"][tminus - i] < 0
+    return cond
+
+# last candle length is greater than the sum of the previous n candle lengths, measured at the tminus index
+def goliath(context, tminus, n):
+    g_length = abs(context["delta"][tminus])
+    prior_lengths_sum = 0
+    for i in range(n):
+        prior_lengths_sum += abs(context["delta"][tminus - i])
+    return g_length > prior_lengths_sum
+
+# last candle length is twice the size of the prior candle length, measured at the tminus index
+def mcdouble(context, tminus):
+    curr_len = abs(context["delta"][tminus])
+    prev_len = abs(context["delta"][tminus - 1])
+    return curr_len > (prev_len * 2)
+
+# last candle length is twice the size of the prior candle length, measured at the tminus index
+def candle_growth(context, tminus):
+    curr_len = abs(context["delta"][tminus])
+    prev_len = abs(context["delta"][tminus - 1])
+    return curr_len > (prev_len * 2)
+
+# last candle length is half the size of the prior candle length, measured at the tminus index
+def candle_shrink(context, tminus):
+    curr_len = abs(context["delta"][tminus])
+    prev_len = abs(context["delta"][tminus - 1])
+    return prev_len > (curr_len * 2)
 
 #########################################################################################################
 # Signals
@@ -145,6 +191,18 @@ def crash(context):
     last_2_rates = context["rate"][-2:]
     s = sum(last_2_rates)
     return (s < -0.03)
+
+# the intent of this signal is to detect a "soft landing" support characterized by a recovery following a red sloping
+def soft_landing(context):
+    if (len(context["delta"]) < 5):
+        return False
+    
+    return (
+        green(context) and              # current candle is green
+        candle_shrink(context, -1) and  # current candle is half the size of the last candle
+        red_streak(context, -2, 2) and  # prior 2 candles were red
+        goliath(context, -2, 3)         # prior red candle was larger than the sum of all 3 before it
+    )
 
 # WIP - very rare signal (or broken?)
 def reversal(context):
@@ -189,7 +247,7 @@ def overbought(context):
 def oversold(context):
     if (len(context["rsi-14"]) <= 0):
         return False
-    return context["rsi-14"][-1] > 70
+    return context["rsi-14"][-1] < 30
 
 signals = [
     surge,
@@ -199,7 +257,8 @@ signals = [
     rsi4_crossunder,
     rsi4_xunder_rsi14,
     overbought,
-    oversold
+    oversold,
+    soft_landing
 ]
 
 buy_criteria = [
@@ -207,8 +266,8 @@ buy_criteria = [
     # if the signal triggered N times in the last T candles
     # (surge, 0, 1),
     # (rsi4_crossover, 3, 1)
-    (reversal, 0, 1),
-    (surge, 12, 2)
+    (soft_landing, 0, 1),
+    (oversold, 2, 1)
 ]
 
 sell_criteria = [
