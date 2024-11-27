@@ -7,3 +7,7 @@ little tweaks to make:
 -maybe lower the stop loss tail so it's not triggered as often
 
 -reset max surge when a stop loss is hit? if it's not holding anything, it should want to go back to holding something as soon as possible
+
+
+
+fix event loop warning: https://stackoverflow.com/questions/73361664/asyncio-get-event-loop-deprecationwarning-there-is-no-current-event-loop

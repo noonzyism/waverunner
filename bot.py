@@ -151,32 +151,34 @@ def red_streak(context, tminus, n):
     cond = True
     for i in range(n):
         cond = cond and context["delta"][tminus - i] < 0
+    if cond:
+        print("FLAG red_streak triggered", flush=True)
     return cond
 
 # last candle length is greater than the sum of the previous n candle lengths, measured at the tminus index
 def goliath(context, tminus, n):
     g_length = abs(context["delta"][tminus])
     prior_lengths_sum = 0
-    for i in range(n):
+    for i in range(1, n+1):
         prior_lengths_sum += abs(context["delta"][tminus - i])
+    if g_length > prior_lengths_sum:
+        print("FLAG goliath triggered", flush=True)
     return g_length > prior_lengths_sum
-
-# last candle length is twice the size of the prior candle length, measured at the tminus index
-def mcdouble(context, tminus):
-    curr_len = abs(context["delta"][tminus])
-    prev_len = abs(context["delta"][tminus - 1])
-    return curr_len > (prev_len * 2)
 
 # last candle length is twice the size of the prior candle length, measured at the tminus index
 def candle_growth(context, tminus):
     curr_len = abs(context["delta"][tminus])
     prev_len = abs(context["delta"][tminus - 1])
+    if curr_len > (prev_len * 2):
+        print("FLAG candle_growth triggered", flush=True)
     return curr_len > (prev_len * 2)
 
 # last candle length is half the size of the prior candle length, measured at the tminus index
 def candle_shrink(context, tminus):
     curr_len = abs(context["delta"][tminus])
     prev_len = abs(context["delta"][tminus - 1])
+    if prev_len > (curr_len * 2):
+        print("FLAG candle_shrink triggered", flush=True)
     return prev_len > (curr_len * 2)
 
 #########################################################################################################
@@ -185,7 +187,7 @@ def candle_shrink(context, tminus):
 def surge(context):
     last_2_rates = context["rate"][-2:]
     s = sum(last_2_rates)
-    return (s > 0.012)
+    return (s > 0.02)
 
 def crash(context):
     last_2_rates = context["rate"][-2:]
@@ -273,8 +275,8 @@ buy_criteria = [
 sell_criteria = [
     # (signal, T, N)
     # if the signal triggered N times in the last T candles
-    (rsi4_xunder_rsi14, 0, 1),
-    (overbought, 0, 1)
+    # (rsi4_xunder_rsi14, 0, 1),
+    # (overbought, 0, 1)
 ]
 
 timeSince = { c : { s.__name__ : 9999 for s in signals } for c in coins }
@@ -540,6 +542,11 @@ async def on_candle_close(coin):
                 last_2_rates = data[coin]["rate"][-2:]
                 s = sum(last_2_rates)
                 alert = ":ocean: {} (${}) over last 2 candles is surging {}%".format(coin, round(data[coin]["close"][-1], 3), round(s*100, 3))
+                await discord_message(alert)
+            if (signal.__name__ == "crash"):
+                last_2_rates = data[coin]["rate"][-2:]
+                s = sum(last_2_rates)
+                alert = ":bangbang: {} (${}) over last 2 candles is crashing {}%".format(coin, round(data[coin]["close"][-1], 3), round(s*100, 3))
                 await discord_message(alert)
         else:
             timeSince[coin][signal.__name__] += 1
